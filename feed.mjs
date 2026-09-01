@@ -1,12 +1,61 @@
-// Fetches and parses the GitHub Changelog RSS feed.
-// No third-party deps: the feed is a controlled, trusted source (github.blog),
-// so a focused regex parser is sufficient and keeps the extension dependency-free.
+// Fetches and parses the GitHub Changelog and Microsoft Developer Blogs feeds.
+// No third-party deps: both feeds are controlled sources, so a focused regex
+// parser is sufficient and keeps the extension dependency-free.
 
-const FEED_BASE = "https://github.blog/changelog/feed/";
+const SOURCES = [
+    {
+        key: "github",
+        name: "GitHub Changelog",
+        feedUrl: "https://github.blog/changelog/feed/",
+        idPrefix: "",
+    },
+    {
+        key: "microsoft-devblogs",
+        name: "Microsoft Developer Blogs",
+        feedUrl: "https://devblogs.microsoft.com/feed/",
+        idPrefix: "microsoft-devblogs:",
+    },
+    {
+        key: "microsoft-devblogs",
+        name: "Microsoft Developer Blogs (Azure DevOps Blog)",
+        feedUrl: "https://devblogs.microsoft.com/devops/feed/",
+        idPrefix: "microsoft-devblogs:",
+    },
+    {
+        key: "github-ai-ml",
+        name: "GitHub AI & ML",
+        feedUrl: "https://github.blog/ai-and-ml/feed/",
+        idPrefix: "github-ai-ml:",
+    },
+    {
+        key: "github-security",
+        name: "GitHub Security",
+        feedUrl: "https://github.blog/security/feed/",
+        idPrefix: "github-security:",
+    },
+    {
+        key: "vscode",
+        name: "Visual Studio Code",
+        feedUrl: "https://code.visualstudio.com/feed.xml",
+        idPrefix: "vscode:",
+        format: "atom",
+        paginated: false,
+    },
+    {
+        key: "azure-devops-release-notes",
+        name: "Azure DevOps Release Notes",
+        feedUrl: "https://github.com/MicrosoftDocs/azure-devops-docs/commits/main/release-notes.atom",
+        idPrefix: "azure-devops-release-notes:",
+        format: "atom",
+        paginated: false,
+        transform: transformAdoReleaseEntry,
+    },
+];
 
-// In-memory cache so re-opens / repeated /api/entries calls don't hammer the feed.
-let cache = { at: 0, pages: 0, entries: [] };
+// In-memory cache so re-opens / repeated state calls don't hammer the feeds.
+let cache = { at: 0, sinceISO: null, minPages: 0, entries: [] };
 const CACHE_MS = 5 * 60 * 1000;
+const MAX_PAGES = 50;
 
 function decodeEntities(str) {
     if (!str) return "";
@@ -96,7 +145,29 @@ function slugFromLink(link) {
     }
 }
 
-function parseItems(xml) {
+function toISO(raw) {
+    if (!raw) return null;
+    const date = new Date(raw);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function buildEntry(source, { id, title, link, author, date, categories, descriptionHtml, contentHtml }) {
+    return {
+        id: source.idPrefix + id,
+        title,
+        link,
+        author,
+        date,
+        categories,
+        source: source.key,
+        sourceName: source.name,
+        excerpt: htmlToText(descriptionHtml).replace(/\s*Read more\s*$/i, "").slice(0, 400),
+        contentHtml: sanitizeHtml(contentHtml || descriptionHtml),
+        contentText: htmlToText(contentHtml || descriptionHtml),
+    };
+}
+
+function parseRssItems(xml, source) {
     const items = [];
     const re = /<item>([\s\S]*?)<\/item>/gi;
     let m;
@@ -109,55 +180,138 @@ function parseItems(xml) {
         const categories = allTags(block, "category").map((c) => decodeEntities(c.trim()));
         const descriptionHtml = stripCdata(firstTag(block, "description"));
         const contentRaw = stripCdata(firstTag(block, "content:encoded"));
-        const dateISO = pubDateRaw ? new Date(pubDateRaw).toISOString() : null;
-        items.push({
-            id: slugFromLink(link),
+        const slug = slugFromLink(link);
+        items.push(buildEntry(source, {
+            id: slug,
             title,
             link,
             author,
-            date: dateISO,
+            date: toISO(pubDateRaw),
             categories,
-            excerpt: htmlToText(descriptionHtml).replace(/\s*Read more\s*$/i, "").slice(0, 400),
-            contentHtml: sanitizeHtml(contentRaw || descriptionHtml),
-            contentText: htmlToText(contentRaw || descriptionHtml),
-        });
+            descriptionHtml,
+            contentHtml: contentRaw,
+        }));
     }
     return items;
 }
 
-async function fetchPage(paged) {
-    const url = paged > 1 ? `${FEED_BASE}?paged=${paged}` : FEED_BASE;
+function atomCategories(block) {
+    const categories = [];
+    const re = /<category\b[^>]*\bterm=["']([^"']+)["'][^>]*\/?>/gi;
+    let match;
+    while ((match = re.exec(block)) !== null) categories.push(decodeEntities(match[1]));
+    return categories;
+}
+
+function parseAtomEntries(xml, source) {
+    const entries = [];
+    const re = /<entry\b[^>]*>([\s\S]*?)<\/entry>/gi;
+    let match;
+    while ((match = re.exec(xml)) !== null) {
+        const block = match[1];
+        const linkMatch =
+            block.match(/<link\b[^>]*\brel=["']alternate["'][^>]*\bhref=["']([^"']+)["'][^>]*\/?>/i) ||
+            block.match(/<link\b[^>]*\bhref=["']([^"']+)["'][^>]*\/?>/i);
+        const link = decodeEntities(linkMatch ? linkMatch[1] : stripCdata(firstTag(block, "id")).trim());
+        const title = decodeEntities(stripCdata(firstTag(block, "title")).trim());
+        const authorBlock = firstTag(block, "author");
+        const author = decodeEntities(stripCdata(firstTag(authorBlock, "name")).trim());
+        const dateRaw = stripCdata(firstTag(block, "published") || firstTag(block, "updated")).trim();
+        const summaryRaw = decodeEntities(stripCdata(firstTag(block, "summary")));
+        const contentRaw = decodeEntities(stripCdata(firstTag(block, "content")));
+        entries.push(buildEntry(source, {
+            id: slugFromLink(link),
+            title,
+            link,
+            author,
+            date: toISO(dateRaw),
+            categories: atomCategories(block),
+            descriptionHtml: summaryRaw,
+            contentHtml: contentRaw,
+        }));
+    }
+    return entries;
+}
+
+function transformAdoReleaseEntry(entry) {
+    const match = entry.title.match(/Azure DevOps Sprint\s+(\d+)\s+Release Notes/i);
+    if (!match) return null;
+    return {
+        ...entry,
+        id: `azure-devops-release-notes:sprint-${match[1]}`,
+        title: `Azure DevOps Sprint ${match[1]} Update`,
+        categories: ["Azure DevOps", "Release notes"],
+    };
+}
+
+function parseEntries(xml, source) {
+    const parsed = source.format === "atom" ? parseAtomEntries(xml, source) : parseRssItems(xml, source);
+    if (!source.transform) return parsed;
+    return parsed.map((entry) => source.transform(entry)).filter(Boolean);
+}
+
+async function fetchPage(source, paged) {
+    const separator = source.feedUrl.includes("?") ? "&" : "?";
+    const url = paged > 1 ? `${source.feedUrl}${separator}paged=${paged}` : source.feedUrl;
     const res = await fetch(url, {
-        headers: { "User-Agent": "copilot-changelog-reader/1.0", Accept: "application/rss+xml, text/xml" },
+        headers: { "User-Agent": "copilot-news-reader/1.0", Accept: "application/rss+xml, text/xml" },
     });
     if (!res.ok) throw new Error(`Feed request failed: ${res.status} ${res.statusText}`);
     return res.text();
 }
 
-export async function fetchEntries({ pages = 3, force = false } = {}) {
-    const now = Date.now();
-    if (!force && cache.entries.length && cache.pages >= pages && now - cache.at < CACHE_MS) {
-        return cache.entries;
-    }
+async function fetchSource(source, { minPages, sinceISO }) {
+    const cutoff = sinceISO ? Date.parse(sinceISO) : null;
     const seen = new Set();
     const entries = [];
-    for (let p = 1; p <= pages; p++) {
+
+    for (let page = 1; page <= MAX_PAGES; page++) {
         let xml;
         try {
-            xml = await fetchPage(p);
+            xml = await fetchPage(source, page);
         } catch (err) {
-            if (p === 1) throw err; // first page must succeed
-            break; // later pages may 404 when history is short
+            if (page === 1) throw err;
+            break;
         }
-        const items = parseItems(xml);
+        const items = parseEntries(xml, source);
         if (!items.length) break;
-        for (const it of items) {
-            if (seen.has(it.id)) continue;
-            seen.add(it.id);
-            entries.push(it);
+        for (const item of items) {
+            if (seen.has(item.id)) continue;
+            seen.add(item.id);
+            entries.push(item);
         }
+        if (source.paginated === false) break;
+
+        const pageDates = items.map((item) => Date.parse(item.date || 0)).filter(Number.isFinite);
+        const coveredCutoff = cutoff !== null && pageDates.length > 0 && Math.min(...pageDates) <= cutoff;
+        if (page >= minPages && (cutoff === null || coveredCutoff)) break;
     }
+    return entries;
+}
+
+export async function fetchEntries({ minPages = 3, sinceISO = null, force = false } = {}) {
+    const now = Date.now();
+    if (
+        !force &&
+        cache.entries.length &&
+        cache.minPages >= minPages &&
+        cache.sinceISO === sinceISO &&
+        now - cache.at < CACHE_MS
+    ) {
+        return cache.entries;
+    }
+
+    const perSource = await Promise.all(SOURCES.map((source) => fetchSource(source, { minPages, sinceISO })));
+    const seenIds = new Set();
+    const seenLinks = new Set();
+    const entries = perSource.flat().filter((entry) => {
+        const normalizedLink = entry.link.replace(/\/$/, "");
+        if (seenIds.has(entry.id) || seenLinks.has(normalizedLink)) return false;
+        seenIds.add(entry.id);
+        seenLinks.add(normalizedLink);
+        return true;
+    });
     entries.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-    cache = { at: now, pages, entries };
+    cache = { at: now, sinceISO, minPages, entries };
     return entries;
 }

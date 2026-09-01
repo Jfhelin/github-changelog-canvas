@@ -42,11 +42,16 @@ export async function setSelected(id) {
     return saveState({ ...state, selectedId: id || null });
 }
 
-export async function setSummary(markdown, unreadIds) {
+export async function setSummary(markdown, candidateIds, relevantExternalIds) {
     const state = await loadState();
     return saveState({
         ...state,
-        summary: { markdown, unreadIds: unreadIds || [], generatedAtISO: new Date().toISOString() },
+        summary: {
+            markdown,
+            candidateIds: candidateIds || [],
+            relevantExternalIds: relevantExternalIds || [],
+            generatedAtISO: new Date().toISOString(),
+        },
     });
 }
 
@@ -61,22 +66,40 @@ function sameSet(a, b) {
 // anything published after the last-read timestamp.
 export function computeView(entries, state) {
     const lastRead = state.lastReadISO ? Date.parse(state.lastReadISO) : 0;
+    const now = Date.now();
     const annotated = entries.map((e) => {
-        const isNew = lastRead === 0 ? true : Date.parse(e.date || 0) > lastRead;
+        const publishedAt = Date.parse(e.date || 0);
+        const isNew = Number.isFinite(publishedAt) && publishedAt <= now && (lastRead === 0 || publishedAt > lastRead);
         return { ...e, isNew };
     });
-    const unread = annotated.filter((e) => e.isNew);
-    const unreadIds = unread.map((e) => e.id);
-    const summaryValid = !!(state.summary && sameSet(state.summary.unreadIds || [], unreadIds));
+    const summaryCandidates = annotated.filter((e) => e.isNew);
+    const candidateIds = summaryCandidates.map((e) => e.id);
+    const storedCandidateIds = state.summary && (state.summary.candidateIds || state.summary.unreadIds || []);
+    const summaryValid = !!(state.summary && sameSet(storedCandidateIds, candidateIds));
+    const storedRelevantIds =
+        state.summary && (state.summary.relevantExternalIds || state.summary.relevantDevBlogIds || []);
+    const relevantExternalIds = new Set(
+        summaryValid && Array.isArray(storedRelevantIds) ? storedRelevantIds : []
+    );
+    const unread = summaryCandidates.filter((e) => e.source === "github" || relevantExternalIds.has(e.id));
+    const readingEntries = annotated.filter((e) => e.source === "github" || relevantExternalIds.has(e.id));
+    const microsoftCandidates = summaryCandidates.filter((e) => e.source === "microsoft-devblogs");
     return {
-        entries: annotated,
+        entries: readingEntries,
         unread,
-        unreadIds,
+        summaryCandidates,
+        candidateIds,
         status: {
             lastReadISO: state.lastReadISO,
             selectedId: state.selectedId,
             unreadCount: unread.length,
-            total: entries.length,
+            reviewCount: summaryCandidates.length,
+            microsoftCandidateCount: microsoftCandidates.length,
+            microsoftRelevantCount: unread.filter((e) => e.source === "microsoft-devblogs").length,
+            externalCandidateCount: summaryCandidates.filter((e) => e.source !== "github").length,
+            externalRelevantCount: unread.filter((e) => e.source !== "github").length,
+            summaryReady: summaryValid,
+            total: readingEntries.length,
             firstVisit: !state.lastReadISO,
         },
         summary: state.summary
