@@ -1,12 +1,14 @@
 # GitHub Changelog Canvas
 
-A light-mode reader for the [GitHub Changelog](https://github.blog/changelog/), built as a [GitHub Copilot CLI](https://github.com/github/copilot-cli) **canvas extension**.
+A light-mode reader for the [GitHub Changelog](https://github.blog/changelog/) and selected
+developer news from Microsoft, GitHub, Azure DevOps, and VS Code, built as a
+[GitHub Copilot CLI](https://github.com/github/copilot-cli) **canvas extension**.
 
 It turns the changelog into a focused reading experience inside Copilot:
 
-- 📰 **Header navigator** — move between updates with Prev / Next (or ← / → arrow keys).
-- 📄 **One article at a time** — full content rendered in a clean, forced **light theme** (images and animated `<video>` clips included).
-- ✨ **AI summary page** — page 0 is an LLM-generated, theme-grouped overview of everything you *haven't read yet*, generated on demand by Copilot.
+- 📰 **Header navigator** — move between updates with Prev / Next (or ← / → arrow keys) and return directly to the summary.
+- 📄 **One article at a time** — full content rendered in a clean, forced **light theme**, with its source clearly labeled.
+- ✨ **AI summary page** — page 0 includes every unread GitHub Changelog update, all official Azure DevOps product updates, and relevant news about GitHub, Copilot, AI and agentic development, VS Code, and code/SDLC security. Each summary bullet links directly to its article page inside the canvas.
 - 🗓️ **Last-read tracking** — remembers the date you last caught up, so "unread" actually means unread. One click to **Mark all read**.
 - 💬 **Discuss with Copilot** — on any article, start a conversation about it; the article's text is injected as context automatically.
 
@@ -17,8 +19,8 @@ The extension declares a canvas to the Copilot runtime via the `@github/copilot-
 | File | Responsibility |
 |------|----------------|
 | `extension.mjs` | Wiring: HTTP server per instance, canvas + actions, `session.send` endpoints (`/api/discuss`, `/api/summarize`), the context hook. |
-| `feed.mjs` | Fetch + parse the changelog RSS feed (`https://github.blog/changelog/feed/`), decode entities, sanitize HTML, extract plain text, cache. |
-| `store.mjs` | Durable per-user state (last-read date, selection, generated summary) under `$COPILOT_HOME/extensions/changelog-reader/artifacts/`. |
+| `feed.mjs` | Fetch + parse RSS and Atom sources for GitHub, Microsoft Developer Blogs, Azure DevOps, and VS Code; deduplicate, sanitize HTML, extract plain text, and cache. |
+| `store.mjs` | Durable per-user state (last-read date, selection, generated summary, relevant external article IDs) under `$COPILOT_HOME/extensions/changelog-reader/artifacts/`. |
 | `ui.mjs` | The light-mode reading pane: header navigator, single-article view, summary page, and a tiny Markdown renderer. |
 
 ### Agent actions
@@ -26,8 +28,8 @@ The extension declares a canvas to the Copilot runtime via the `@github/copilot-
 - `list_changelog_entries` — recent entries, newest first (optionally only unread).
 - `get_changelog_article` — full readable text by id/url (or the selected article).
 - `get_selected_article` — the article the user picked via "Discuss with Copilot".
-- `get_unread_for_summary` — full text of every unread article, for building the summary.
-- `set_unread_summary` — store the Markdown summary shown on page 0.
+- `get_unread_for_summary` — full text of every unread candidate plus the relevance profile.
+- `set_unread_summary` — store the Markdown summary and selected relevant external article IDs.
 - `mark_changelog_read` / `changelog_status` — read-state management.
 
 ## Install
@@ -42,7 +44,7 @@ git clone https://github.com/Jfhelin/github-changelog-canvas.git \
   ~/.copilot/extensions/changelog-reader
 ```
 
-Then reload extensions in Copilot CLI (or restart it) and open the **GitHub Changelog** canvas.
+Then reload extensions in Copilot CLI (or restart it) and open the **Developer News** canvas.
 
 > The `@github/copilot-sdk` import is resolved automatically by the Copilot CLI — no `package.json` or `node_modules` required.
 

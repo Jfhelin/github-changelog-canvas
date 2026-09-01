@@ -1,11 +1,11 @@
 // Extension: changelog-reader
-// A light-mode GitHub Changelog reader. The header is a navigator; the body
+// A light-mode developer news reader. The header is a navigator; the body
 // shows one article at a time. Page 0 is an LLM-generated summary of the
-// articles you haven't read yet. You can jump into Copilot to discuss any
-// article (or the whole unread batch) with one click.
+// GitHub Changelog and relevant Microsoft Developer Blogs articles you haven't
+// read yet. You can jump into Copilot to discuss any article with one click.
 //
 // Pieces:
-//   feed.mjs  — fetch + parse the changelog RSS feed
+//   feed.mjs  — fetch + parse the GitHub and Microsoft RSS feeds
 //   store.mjs — durable last-read date + selection + generated summary
 //   ui.mjs    — the light-mode reading pane (header nav + single article)
 // This file wires an HTTP server per canvas instance, the agent-callable
@@ -17,7 +17,7 @@ import { joinSession, createCanvas, CanvasError } from "@github/copilot-sdk/exte
 import { fetchEntries } from "./feed.mjs";
 import { loadState, markAllRead, setSelected, setSummary, computeView } from "./store.mjs";
 
-const PAGES = 3; // ~30 recent entries; enough history for occasional readers.
+const MIN_PAGES = 3;
 const servers = new Map(); // instanceId -> { server, url }
 
 // Hoisted so HTTP handlers created before joinSession resolves can still reach
@@ -25,8 +25,8 @@ const servers = new Map(); // instanceId -> { server, url }
 let session = null;
 
 async function getView({ force = false } = {}) {
-    const entries = await fetchEntries({ pages: PAGES, force });
     const state = await loadState();
+    const entries = await fetchEntries({ minPages: MIN_PAGES, sinceISO: state.lastReadISO, force });
     return computeView(entries, state);
 }
 
@@ -41,20 +41,22 @@ function navArticles(view) {
         author: e.author,
         date: e.date,
         categories: e.categories,
+        source: e.source,
+        sourceName: e.sourceName,
         isNew: e.isNew,
         contentHtml: e.contentHtml,
     }));
 }
 
 async function findEntry({ id, url } = {}) {
-    const entries = await fetchEntries({ pages: PAGES });
+    const state = await loadState();
+    const entries = await fetchEntries({ minPages: MIN_PAGES, sinceISO: state.lastReadISO });
     if (id) {
         const byId = entries.find((e) => e.id === id);
         if (byId) return byId;
     }
     if (url) {
-        const slug = url.replace(/.*\/changelog\//, "").replace(/\/$/, "");
-        const byUrl = entries.find((e) => e.link === url || e.id === slug);
+        const byUrl = entries.find((e) => e.link === url);
         if (byUrl) return byUrl;
     }
     return null;
@@ -112,7 +114,7 @@ async function handleRequest(req, res, renderPage) {
                 status: after.status,
                 summary: after.summary,
                 articles: navArticles(after),
-                markedRead: before.status.unreadCount,
+                markedRead: before.status.reviewCount,
             });
             return;
         }
@@ -131,7 +133,9 @@ async function handleRequest(req, res, renderPage) {
             }
             await setSelected(entry.id);
             const ok = await sendToCopilot(
-                "I'd like to discuss this GitHub Changelog article: \"" +
+                "I'd like to discuss this developer news article from " +
+                    entry.sourceName +
+                    ': "' +
                     entry.title +
                     "\" (" +
                     entry.link +
@@ -143,10 +147,14 @@ async function handleRequest(req, res, renderPage) {
         if (req.method === "POST" && url.pathname === "/api/summarize") {
             const view = await getView();
             const ok = await sendToCopilot(
-                "Please generate a summary of the GitHub Changelog updates I haven't read yet. " +
-                    "Call the get_unread_for_summary action to fetch them, write a concise, well-grouped Markdown summary " +
-                    "(group related items under short headings, use bullet points, keep it skimmable), then call " +
-                    "set_unread_summary with that Markdown so it appears on the summary page of my Changelog reader."
+                "Please generate my unread developer news summary. Call get_unread_for_summary to fetch every candidate. " +
+                    "Include every GitHub Changelog entry. Review every other entry, but include only articles matching the " +
+                    "relevanceProfile returned by the action. Group entries under a ## heading matching each article's " +
+                    "sourceName, then use short topic subheadings. Do not repeat source names in individual bullets. Keep " +
+                    "it concise and skimmable. In every bullet, make a short descriptive phrase an internal Markdown link " +
+                    "using the exact article ID as the target, for example [descriptive phrase](article:EXACT_ID). Do not " +
+                    "use external URLs in summary links. Then call set_unread_summary with the Markdown and the exact IDs " +
+                    "of every included article whose source is not GitHub Changelog."
             );
             json(res, 200, { ok, generating: ok, unreadCount: view.status.unreadCount });
             return;
@@ -169,14 +177,14 @@ async function startServer() {
 
 const canvas = createCanvas({
     id: "changelog-reader",
-    displayName: "GitHub Changelog",
+    displayName: "Developer News",
     description:
-        "Light-mode reader for the GitHub Changelog that tracks your last-read date and lets you chat about articles.",
+        "Personalized reader for GitHub Changelog and relevant Microsoft Developer Blogs updates.",
     actions: [
         {
             name: "list_changelog_entries",
             description:
-                "List recent GitHub Changelog entries, newest first. Set onlyNew to return only entries the user hasn't read yet.",
+                "List recent entries in the personalized developer news reading queue, newest first.",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -198,6 +206,8 @@ const canvas = createCanvas({
                         author: e.author,
                         date: e.date,
                         categories: e.categories,
+                        source: e.source,
+                        sourceName: e.sourceName,
                         isNew: e.isNew,
                         excerpt: e.excerpt,
                     })),
@@ -233,6 +243,8 @@ const canvas = createCanvas({
                     author: entry.author,
                     date: entry.date,
                     categories: entry.categories,
+                    source: entry.source,
+                    sourceName: entry.sourceName,
                     content: entry.contentText,
                 };
             },
@@ -258,6 +270,8 @@ const canvas = createCanvas({
                     author: entry.author,
                     date: entry.date,
                     categories: entry.categories,
+                    source: entry.source,
+                    sourceName: entry.sourceName,
                     content: entry.contentText,
                 };
             },
@@ -265,19 +279,23 @@ const canvas = createCanvas({
         {
             name: "get_unread_for_summary",
             description:
-                "Return the full readable text of every changelog article the user hasn't read yet, for generating the summary page. Newest first.",
+                "Return every unread developer-news candidate. Include all GitHub Changelog entries and select relevant entries from every other source using relevanceProfile.",
             handler: async () => {
                 const view = await getView();
                 return {
                     status: view.status,
-                    unreadCount: view.status.unreadCount,
-                    articles: view.unread.map((e) => ({
+                    relevanceProfile:
+                        "Always include every GitHub Changelog entry. From all other sources, include: GitHub or GitHub Copilot news not duplicated in the Changelog; all official Azure DevOps product updates, sprint notes, release announcements, and service changes; significant VS Code updates involving agents, AI, developer workflows, or broad developer impact; AI development; agentic changes for developers; code security; SDLC security; and major updates relevant to most developers. Exclude duplicate coverage and narrow product updates outside these areas.",
+                    candidateCount: view.status.reviewCount,
+                    articles: view.summaryCandidates.map((e) => ({
                         id: e.id,
                         title: e.title,
                         url: e.link,
                         author: e.author,
                         date: e.date,
                         categories: e.categories,
+                        source: e.source,
+                        sourceName: e.sourceName,
                         content: e.contentText,
                     })),
                 };
@@ -291,30 +309,71 @@ const canvas = createCanvas({
                 type: "object",
                 properties: {
                     markdown: { type: "string", description: "The Markdown summary to display on the summary page." },
+                    relevantExternalIds: {
+                        type: "array",
+                        items: { type: "string" },
+                        description:
+                            "Exact IDs of included articles whose source is not GitHub Changelog. Use [] when none qualify.",
+                    },
                 },
-                required: ["markdown"],
+                required: ["markdown", "relevantExternalIds"],
             },
             handler: async (ctx) => {
                 const markdown = ctx.input && ctx.input.markdown;
                 if (!markdown || typeof markdown !== "string")
                     throw new CanvasError("invalid_input", "Provide a non-empty 'markdown' string.");
                 const view = await getView();
-                await setSummary(markdown, view.unreadIds);
-                return { ok: true, unreadCount: view.status.unreadCount };
+                const relevantIds = ctx.input && ctx.input.relevantExternalIds;
+                if (!Array.isArray(relevantIds))
+                    throw new CanvasError("invalid_input", "Provide 'relevantExternalIds' as an array.");
+                const validExternalIds = new Set(
+                    view.summaryCandidates.filter((e) => e.source !== "github").map((e) => e.id)
+                );
+                const invalidIds = relevantIds.filter((id) => !validExternalIds.has(id));
+                if (invalidIds.length)
+                    throw new CanvasError("invalid_input", `Unknown external article ids: ${invalidIds.join(", ")}`);
+                const includedIds = new Set([
+                    ...view.summaryCandidates.filter((e) => e.source === "github").map((e) => e.id),
+                    ...relevantIds,
+                ]);
+                const requiredSources = new Set(
+                    view.summaryCandidates.filter((e) => includedIds.has(e.id)).map((e) => e.sourceName)
+                );
+                const missingSources = [...requiredSources].filter((sourceName) => !markdown.includes(`## ${sourceName}`));
+                if (missingSources.length)
+                    throw new CanvasError(
+                        "invalid_input",
+                        `Add source headings for: ${missingSources.join(", ")}`
+                    );
+                const missingLinks = view.summaryCandidates
+                    .filter((e) => includedIds.has(e.id))
+                    .filter(
+                        (e) =>
+                            !markdown.includes(`(article:${e.id})`) &&
+                            !markdown.includes(`(article:${encodeURIComponent(e.id)})`)
+                    )
+                    .map((e) => e.id);
+                if (missingLinks.length)
+                    throw new CanvasError(
+                        "invalid_input",
+                        `Add internal article links for: ${missingLinks.join(", ")}`
+                    );
+                await setSummary(markdown, view.candidateIds, relevantIds);
+                return { ok: true, relevantExternalCount: relevantIds.length };
             },
         },
         {
             name: "mark_changelog_read",
-            description: "Mark all changelog entries as read as of now. Returns how many were newly marked read.",
+            description: "Mark all reviewed developer news entries as read as of now.",
             handler: async () => {
                 const before = await getView();
                 await markAllRead();
-                return { ok: true, markedRead: before.status.unreadCount, lastReadISO: (await loadState()).lastReadISO };
+                return { ok: true, markedRead: before.status.reviewCount, lastReadISO: (await loadState()).lastReadISO };
             },
         },
         {
             name: "changelog_status",
-            description: "Return reading status: last-read date, count of unread entries, and total loaded.",
+            description: "Return reading status for GitHub Changelog and relevant Microsoft Developer Blogs entries.",
             handler: async () => {
                 const { status } = await getView();
                 return status;
@@ -327,10 +386,10 @@ const canvas = createCanvas({
             entry = await startServer();
             servers.set(ctx.instanceId, entry);
         }
-        let title = "GitHub Changelog";
+        let title = "Developer News";
         try {
             const { status } = await getView();
-            if (status.unreadCount > 0) title = `GitHub Changelog (${status.unreadCount} unread)`;
+            if (status.unreadCount > 0) title = `Developer News (${status.unreadCount} unread)`;
         } catch {
             /* keep default title if feed fetch fails on open */
         }
@@ -364,6 +423,7 @@ session = await joinSession({
                         "Title: " + entry.title + "\n" +
                         "Date: " + (entry.date || "unknown") + "\n" +
                         "URL: " + entry.link + "\n" +
+                        "Source: " + entry.sourceName + "\n" +
                         (entry.categories && entry.categories.length
                             ? "Categories: " + entry.categories.join(", ") + "\n"
                             : "") +
@@ -376,7 +436,7 @@ session = await joinSession({
     },
 });
 
-session.log("Changelog reader ready. Open the 'GitHub Changelog' canvas to start reading.", {
+session.log("Developer news reader ready. Open the 'Developer News' canvas to start reading.", {
     level: "info",
     ephemeral: true,
 });

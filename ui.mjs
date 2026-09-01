@@ -14,7 +14,7 @@ export function renderPage() {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>GitHub Changelog</title>
+<title>Developer News</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -76,6 +76,9 @@ export function renderPage() {
            padding: 1px 6px; border-radius: 999px; }
   .cat { background: #ddf4ff; color: #0969da; border: 1px solid rgba(9,105,218,0.2);
          font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+  .source { display: inline-block; background: #f6f8fa; color: #424a53; border: 1px solid #d1d9e0;
+            font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
+  .source-ms { background: #fff8c5; color: #633c01; border-color: #d4a72c; }
   .art-title { font-size: 22px; font-weight: 700; line-height: 1.3; margin: 4px 0 14px; letter-spacing: -0.01em; }
   .art-title a { color: #1f2328; }
 
@@ -111,6 +114,11 @@ export function renderPage() {
   .empty-ico { font-size: 40px; }
   .rowbtns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
   .footbtns { margin-top: 22px; padding-top: 16px; border-top: 1px solid #eaeef2; display: flex; gap: 10px; flex-wrap: wrap; }
+  button.summary-link {
+    appearance: none; display: inline; padding: 2px 0; border: 0; background: transparent;
+    color: #0969da; font: inherit; font-weight: 600; text-align: left; white-space: normal;
+  }
+  button.summary-link:hover:not(:disabled) { background: transparent; text-decoration: underline; }
 
   .spin { display: inline-block; width: 15px; height: 15px; border: 2px solid rgba(130,80,223,0.25);
           border-top-color: #8250df; border-radius: 50%; animation: sp 0.8s linear infinite; vertical-align: -3px; margin-right: 8px; }
@@ -128,10 +136,11 @@ export function renderPage() {
 <body>
   <header class="nav">
     <div class="brandrow">
-      <span class="brand">📰 GitHub Changelog</span>
+      <span class="brand">📰 Developer News</span>
       <span class="status" id="status">Loading…</span>
     </div>
     <div class="navrow">
+      <button class="icon" data-act="summary" id="btnSummary" title="Back to summary">Summary</button>
       <button class="icon" data-act="prev" id="btnPrev" title="Previous (←)">◀ Prev</button>
       <span class="pos" id="pos">—</span>
       <button class="icon" data-act="next" id="btnNext" title="Next (→)">Next ▶</button>
@@ -155,6 +164,7 @@ export function renderPage() {
   var elStatus = document.getElementById("status");
   var elPos = document.getElementById("pos");
   var btnPrev = document.getElementById("btnPrev");
+  var btnSummary = document.getElementById("btnSummary");
   var btnNext = document.getElementById("btnNext");
   var btnDiscuss = document.getElementById("btnDiscuss");
   var btnMark = document.getElementById("btnMark");
@@ -190,6 +200,10 @@ export function renderPage() {
   // ---- tiny markdown -> html (headings, lists, bold, links, inline code) ----
   function inlineMd(s) {
     s = esc(s);
+    s = s.replace(/\\[([^\\]]+)\\]\\(article:([^)\\s]+)\\)/g, function (_, text, id) {
+      var safeId = id.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+      return '<button class="summary-link" data-act="openbyid" data-id="' + safeId + '">' + text + "</button>";
+    });
     s = s.replace(/\\[([^\\]]+)\\]\\((https?:[^)\\s]+)\\)/g,
       '<a href="$2" target="_blank" rel="noopener">$1</a>');
     s = s.replace(/\\*\\*([^*]+)\\*\\*/g, "<strong>$1</strong>");
@@ -227,18 +241,20 @@ export function renderPage() {
   function renderHeader() {
     var st = data.status || {};
     var txt;
-    if (st.firstVisit) txt = "First visit — " + (st.unreadCount || 0) + " recent updates";
-    else if ((st.unreadCount || 0) > 0) txt = (st.unreadCount) + " unread since " + (fmtDate(st.lastReadISO) || "last visit");
+    if (st.firstVisit) txt = "First visit — " + (st.reviewCount || 0) + " updates to review";
+    else if ((st.reviewCount || 0) > 0 && !st.summaryReady) txt = (st.reviewCount || 0) + " updates awaiting relevance review";
+    else if ((st.reviewCount || 0) > 0) txt = (st.unreadCount || 0) + " relevant updates since " + (fmtDate(st.lastReadISO) || "last visit");
     else txt = "All caught up · last read " + (fmtDate(st.lastReadISO) || "—");
     elStatus.textContent = txt;
 
     var n = articleCount();
     elPos.textContent = idx === 0 ? "Summary" : ("Article " + idx + " / " + n);
     btnPrev.disabled = idx === 0;
+    btnSummary.disabled = idx === 0;
     btnNext.disabled = idx >= n;
     var onArticle = idx > 0 && n > 0;
     btnDiscuss.style.display = onArticle ? "" : "none";
-    btnMark.disabled = (st.unreadCount || 0) === 0;
+    btnMark.disabled = (st.reviewCount || 0) === 0;
   }
 
   function currentArticle() {
@@ -254,9 +270,11 @@ export function renderPage() {
       return '<span class="cat">' + esc(c) + "</span>";
     }).join(" ");
     var badge = a.isNew ? '<span class="badge">New</span>' : "";
+    var sourceClass = String(a.source || "").indexOf("microsoft") === 0 ? "source source-ms" : "source";
+    var source = '<span class="' + sourceClass + '">Source: ' + esc(a.sourceName || "GitHub Changelog") + "</span>";
     var html =
       '<article class="card">' +
-      '<div class="meta">' + badge +
+      '<div class="meta">' + badge + source +
         (a.date ? "<span>" + esc(fmtDate(a.date)) + "</span>" : "") +
         (a.author ? "<span>· " + esc(a.author) + "</span>" : "") +
         (cats ? "<span>" + cats + "</span>" : "") +
@@ -277,8 +295,9 @@ export function renderPage() {
   function renderSummary() {
     var st = data.status || {};
     var unread = st.unreadCount || 0;
+    var reviewCount = st.reviewCount || 0;
 
-    if (unread === 0) {
+    if (reviewCount === 0) {
       app.innerHTML =
         '<div class="card center">' +
         '<div class="empty-ico">🎉</div>' +
@@ -292,9 +311,11 @@ export function renderPage() {
     }
 
     var sum = data.summary;
+    var summaryCount = sum && sum.valid ? unread : reviewCount;
     var head =
       '<div class="summary-head"><h1>✨ Your unread summary</h1></div>' +
-      '<p class="sub">' + unread + " update" + (unread === 1 ? "" : "s") + " you haven't read yet.</p>";
+      '<p class="sub">' + summaryCount + " update" + (summaryCount === 1 ? "" : "s") +
+      (sum && sum.valid ? " relevant to you." : " to review across GitHub and Microsoft Developer Blogs.") + "</p>";
 
     if (generating) {
       app.innerHTML =
@@ -385,6 +406,13 @@ export function renderPage() {
     var act = el.getAttribute("data-act");
     if (act === "prev") { if (idx > 0) { idx--; render(); } }
     else if (act === "next") { if (idx < articleCount()) { idx++; render(); } }
+    else if (act === "summary") { idx = 0; render(); }
+    else if (act === "openbyid") {
+      var targetId = el.getAttribute("data-id") || "";
+      try { targetId = decodeURIComponent(targetId); } catch (_) {}
+      var targetIndex = data.articles.findIndex(function (article) { return article.id === targetId; });
+      if (targetIndex >= 0) { idx = targetIndex + 1; render(); }
+    }
     else if (act === "goarticles") { if (articleCount() > 0) { idx = 1; render(); } }
     else if (act === "discuss") { doDiscuss(); }
     else if (act === "summarize") { doSummarize(); }
