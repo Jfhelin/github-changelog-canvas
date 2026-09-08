@@ -1,8 +1,8 @@
 // Extension: changelog-reader
 // A light-mode developer news reader. The header is a navigator; the body
 // shows one article at a time. Page 0 is an LLM-generated summary of the
-// GitHub Changelog and relevant Microsoft Developer Blogs articles you haven't
-// read yet. You can jump into Copilot to discuss any article with one click.
+// GitHub Changelog, GitHub Next, and relevant external articles you haven't read
+// yet. You can jump into Copilot to discuss any article with one click.
 //
 // Pieces:
 //   feed.mjs  — fetch + parse the GitHub and Microsoft RSS feeds
@@ -15,7 +15,14 @@
 import { createServer } from "node:http";
 import { joinSession, createCanvas, CanvasError } from "@github/copilot-sdk/extension";
 import { fetchEntries } from "./feed.mjs";
-import { loadState, markAllRead, setSelected, setSummary, computeView } from "./store.mjs";
+import {
+    loadState,
+    markAllRead,
+    setSelected,
+    setSummary,
+    computeView,
+    isAlwaysIncluded,
+} from "./store.mjs";
 
 const MIN_PAGES = 3;
 const servers = new Map(); // instanceId -> { server, url }
@@ -148,13 +155,13 @@ async function handleRequest(req, res, renderPage) {
             const view = await getView();
             const ok = await sendToCopilot(
                 "Please generate my unread developer news summary. Call get_unread_for_summary to fetch every candidate. " +
-                    "Include every GitHub Changelog entry. Review every other entry, but include only articles matching the " +
-                    "relevanceProfile returned by the action. Group entries under a ## heading matching each article's " +
+                    "Include every GitHub Changelog and GitHub Next entry. Review every other entry, but include only articles " +
+                    "matching the relevanceProfile returned by the action. Group entries under a ## heading matching each article's " +
                     "sourceName, then use short topic subheadings. Do not repeat source names in individual bullets. Keep " +
                     "it concise and skimmable. In every bullet, make a short descriptive phrase an internal Markdown link " +
                     "using the exact article ID as the target, for example [descriptive phrase](article:EXACT_ID). Do not " +
                     "use external URLs in summary links. Then call set_unread_summary with the Markdown and the exact IDs " +
-                    "of every included article whose source is not GitHub Changelog."
+                    "of every included article whose source is neither GitHub Changelog nor GitHub Next."
             );
             json(res, 200, { ok, generating: ok, unreadCount: view.status.unreadCount });
             return;
@@ -179,7 +186,7 @@ const canvas = createCanvas({
     id: "changelog-reader",
     displayName: "Developer News",
     description:
-        "Personalized reader for GitHub Changelog and relevant Microsoft Developer Blogs updates.",
+        "Personalized reader for GitHub Changelog, GitHub Next, and relevant developer news.",
     actions: [
         {
             name: "list_changelog_entries",
@@ -279,13 +286,13 @@ const canvas = createCanvas({
         {
             name: "get_unread_for_summary",
             description:
-                "Return every unread developer-news candidate. Include all GitHub Changelog entries and select relevant entries from every other source using relevanceProfile.",
+                "Return every unread developer-news candidate. Include all GitHub Changelog and GitHub Next entries, then select relevant entries from other sources using relevanceProfile.",
             handler: async () => {
                 const view = await getView();
                 return {
                     status: view.status,
                     relevanceProfile:
-                        "Always include every GitHub Changelog entry. From all other sources, include: GitHub or GitHub Copilot news not duplicated in the Changelog; all official Azure DevOps product updates, sprint notes, release announcements, and service changes; significant VS Code updates involving agents, AI, developer workflows, or broad developer impact; AI development; agentic changes for developers; code security; SDLC security; and major updates relevant to most developers. Exclude duplicate coverage and narrow product updates outside these areas.",
+                        "Always include every GitHub Changelog and GitHub Next entry. From all other sources, include: GitHub or GitHub Copilot news not duplicated in those sources; all official Azure DevOps product updates, sprint notes, release announcements, and service changes; significant VS Code updates involving agents, AI, developer workflows, or broad developer impact; AI development; agentic changes for developers; code security; SDLC security; and major updates relevant to most developers. Exclude duplicate coverage and narrow product updates outside these areas.",
                     candidateCount: view.status.reviewCount,
                     articles: view.summaryCandidates.map((e) => ({
                         id: e.id,
@@ -313,7 +320,7 @@ const canvas = createCanvas({
                         type: "array",
                         items: { type: "string" },
                         description:
-                            "Exact IDs of included articles whose source is not GitHub Changelog. Use [] when none qualify.",
+                            "Exact IDs of included articles that are not automatically included GitHub Changelog or GitHub Next entries. Use [] when none qualify.",
                     },
                 },
                 required: ["markdown", "relevantExternalIds"],
@@ -327,13 +334,13 @@ const canvas = createCanvas({
                 if (!Array.isArray(relevantIds))
                     throw new CanvasError("invalid_input", "Provide 'relevantExternalIds' as an array.");
                 const validExternalIds = new Set(
-                    view.summaryCandidates.filter((e) => e.source !== "github").map((e) => e.id)
+                    view.summaryCandidates.filter((e) => !isAlwaysIncluded(e)).map((e) => e.id)
                 );
                 const invalidIds = relevantIds.filter((id) => !validExternalIds.has(id));
                 if (invalidIds.length)
                     throw new CanvasError("invalid_input", `Unknown external article ids: ${invalidIds.join(", ")}`);
                 const includedIds = new Set([
-                    ...view.summaryCandidates.filter((e) => e.source === "github").map((e) => e.id),
+                    ...view.summaryCandidates.filter(isAlwaysIncluded).map((e) => e.id),
                     ...relevantIds,
                 ]);
                 const requiredSources = new Set(
@@ -373,7 +380,7 @@ const canvas = createCanvas({
         },
         {
             name: "changelog_status",
-            description: "Return reading status for GitHub Changelog and relevant Microsoft Developer Blogs entries.",
+            description: "Return reading status for GitHub Changelog, GitHub Next, and relevant developer news.",
             handler: async () => {
                 const { status } = await getView();
                 return status;
@@ -418,7 +425,7 @@ session = await joinSession({
                 const text = (entry.contentText || "").slice(0, 6000);
                 return {
                     additionalContext:
-                        "The user is reading a GitHub Changelog article in the Changelog reader canvas and may be asking about it.\n" +
+                        "The user is reading a developer news article in the reader canvas and may be asking about it.\n" +
                         "Selected article:\n" +
                         "Title: " + entry.title + "\n" +
                         "Date: " + (entry.date || "unknown") + "\n" +

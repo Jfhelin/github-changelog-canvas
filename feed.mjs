@@ -1,5 +1,5 @@
-// Fetches and parses the GitHub Changelog and Microsoft Developer Blogs feeds.
-// No third-party deps: both feeds are controlled sources, so a focused regex
+// Fetches and parses the developer news RSS and Atom feeds.
+// No third-party deps: the feeds are controlled sources, so a focused regex
 // parser is sufficient and keeps the extension dependency-free.
 
 const SOURCES = [
@@ -8,6 +8,13 @@ const SOURCES = [
         name: "GitHub Changelog",
         feedUrl: "https://github.blog/changelog/feed/",
         idPrefix: "",
+    },
+    {
+        key: "github-next",
+        name: "GitHub Next",
+        feedUrl: "https://githubnext.com/rss.xml",
+        idPrefix: "github-next:",
+        paginated: false,
     },
     {
         key: "microsoft-devblogs",
