@@ -61,6 +61,10 @@ function sameSet(a, b) {
     return b.every((x) => sa.has(x));
 }
 
+export function isAlwaysIncluded(entry) {
+    return entry.source === "github" || entry.source === "github-next";
+}
+
 // Annotate entries with `isNew` (unread) and build the reading view.
 // Unread rule: first visit (no last-read) => everything is unread; otherwise
 // anything published after the last-read timestamp.
@@ -81,8 +85,8 @@ export function computeView(entries, state) {
     const relevantExternalIds = new Set(
         summaryValid && Array.isArray(storedRelevantIds) ? storedRelevantIds : []
     );
-    const unread = summaryCandidates.filter((e) => e.source === "github" || relevantExternalIds.has(e.id));
-    const readingEntries = annotated.filter((e) => e.source === "github" || relevantExternalIds.has(e.id));
+    const unread = summaryCandidates.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
+    const readingEntries = annotated.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
     const microsoftCandidates = summaryCandidates.filter((e) => e.source === "microsoft-devblogs");
     return {
         entries: readingEntries,
@@ -96,8 +100,8 @@ export function computeView(entries, state) {
             reviewCount: summaryCandidates.length,
             microsoftCandidateCount: microsoftCandidates.length,
             microsoftRelevantCount: unread.filter((e) => e.source === "microsoft-devblogs").length,
-            externalCandidateCount: summaryCandidates.filter((e) => e.source !== "github").length,
-            externalRelevantCount: unread.filter((e) => e.source !== "github").length,
+            externalCandidateCount: summaryCandidates.filter((e) => !isAlwaysIncluded(e)).length,
+            externalRelevantCount: unread.filter((e) => !isAlwaysIncluded(e)).length,
             summaryReady: summaryValid,
             total: readingEntries.length,
             firstVisit: !state.lastReadISO,

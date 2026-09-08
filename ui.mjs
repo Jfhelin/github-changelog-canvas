@@ -1,4 +1,4 @@
-// Light-mode reading UI for the GitHub Changelog reader.
+// Light-mode reading UI for the developer news reader.
 // Layout: a sticky header that acts as the navigator (prev / next / actions),
 // and a body that shows ONE thing at a time — page 0 is the LLM summary of
 // unread articles, pages 1..N are individual articles.
@@ -302,7 +302,7 @@ export function renderPage() {
         '<div class="card center">' +
         '<div class="empty-ico">🎉</div>' +
         "<h1>You're all caught up</h1>" +
-        '<p class="sub">No unread GitHub Changelog updates. You can still browse the ' + articleCount() + " most recent below.</p>" +
+        '<p class="sub">No unread GitHub or relevant developer news updates. You can still browse the ' + articleCount() + " most recent below.</p>" +
         '<div class="rowbtns">' +
           (articleCount() > 0 ? '<button class="primary" data-act="goarticles">Browse recent ▶</button>' : "") +
           '<button data-act="refresh">⟳ Refresh</button>' +
@@ -315,7 +315,7 @@ export function renderPage() {
     var head =
       '<div class="summary-head"><h1>✨ Your unread summary</h1></div>' +
       '<p class="sub">' + summaryCount + " update" + (summaryCount === 1 ? "" : "s") +
-      (sum && sum.valid ? " relevant to you." : " to review across GitHub and Microsoft Developer Blogs.") + "</p>";
+      (sum && sum.valid ? " relevant to you." : " to review across GitHub and other developer sources.") + "</p>";
 
     if (generating) {
       app.innerHTML =
