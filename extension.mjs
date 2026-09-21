@@ -146,7 +146,9 @@ async function handleRequest(req, res, renderPage) {
                     entry.title +
                     "\" (" +
                     entry.link +
-                    "). Please give me a short take on what it means and why it matters, then ask what I want to dig into."
+                    "). For your first reply, give a concise, plain-language explanation for someone unfamiliar with the topic. " +
+                    "Explain what changed, who would use it, when they would use it, and why they should care. " +
+                    "Do not ask a follow-up question or present multiple-choice options or a menu of topics in that first reply."
             );
             json(res, 200, { ok, selectedId: entry.id });
             return;
