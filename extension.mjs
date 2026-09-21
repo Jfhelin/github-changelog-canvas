@@ -13,6 +13,7 @@
 // session.send).
 
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { joinSession, createCanvas, CanvasError } from "@github/copilot-sdk/extension";
 import { fetchEntries } from "./feed.mjs";
 import {
@@ -88,6 +89,37 @@ function json(res, code, payload) {
     res.end(JSON.stringify(payload));
 }
 
+function normalizeExternalUrl(value) {
+    if (typeof value !== "string") return null;
+    try {
+        const url = new URL(value);
+        return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+    } catch {
+        return null;
+    }
+}
+
+function openExternalUrl(url) {
+    const command =
+        process.platform === "darwin"
+            ? { file: "open", args: [url] }
+            : process.platform === "win32"
+              ? { file: "rundll32.exe", args: ["url.dll,FileProtocolHandler", url] }
+              : { file: "xdg-open", args: [url] };
+
+    return new Promise((resolve, reject) => {
+        const child = spawn(command.file, command.args, {
+            detached: true,
+            stdio: "ignore",
+        });
+        child.once("error", reject);
+        child.once("spawn", () => {
+            child.unref();
+            resolve();
+        });
+    });
+}
+
 async function sendToCopilot(prompt) {
     if (!session) return false;
     try {
@@ -129,6 +161,17 @@ async function handleRequest(req, res, renderPage) {
             const body = await readBody(req);
             await setSelected(body.id || null);
             json(res, 200, { ok: true, selectedId: body.id || null });
+            return;
+        }
+        if (req.method === "POST" && url.pathname === "/api/open-external") {
+            const body = await readBody(req);
+            const externalUrl = normalizeExternalUrl(body.url);
+            if (!externalUrl) {
+                json(res, 400, { ok: false, error: "Only HTTP and HTTPS links can be opened." });
+                return;
+            }
+            await openExternalUrl(externalUrl);
+            json(res, 200, { ok: true });
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/discuss") {
