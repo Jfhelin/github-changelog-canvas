@@ -161,6 +161,7 @@ export function renderPage() {
   var toastTimer = null;
 
   var app = document.getElementById("app");
+  var main = document.querySelector("main");
   var elStatus = document.getElementById("status");
   var elPos = document.getElementById("pos");
   var btnPrev = document.getElementById("btnPrev");
@@ -289,7 +290,21 @@ export function renderPage() {
     app.innerHTML = html;
     // Inject already-sanitized article HTML directly.
     var body = document.getElementById("artbody");
-    if (body) body.innerHTML = a.contentHtml || "<p>(No content.)</p>";
+    if (body) {
+      body.innerHTML = a.contentHtml || "<p>(No content.)</p>";
+      Array.prototype.forEach.call(body.querySelectorAll("a[href]"), function (link) {
+        try {
+          var resolved = new URL(link.getAttribute("href"), a.url);
+          if (!/^https?:$/i.test(resolved.protocol)) { link.removeAttribute("href"); return; }
+          link.href = resolved.href;
+        } catch (_) {
+          link.removeAttribute("href");
+          return;
+        }
+        link.target = "_blank";
+        link.rel = "noopener";
+      });
+    }
   }
 
   function renderSummary() {
@@ -350,6 +365,12 @@ export function renderPage() {
 
   function render() { clampIdx(); renderHeader(); renderBody(); }
 
+  function navigateTo(nextIdx) {
+    idx = nextIdx;
+    render();
+    if (main) main.scrollTop = 0;
+  }
+
   function setState(s) {
     if (s && s.status) { data = s; }
     render();
@@ -400,30 +421,51 @@ export function renderPage() {
     });
   }
 
+  function openExternal(anchor, e) {
+    if (!anchor) return false;
+    var href = anchor.href || "";
+    if (!/^https?:/i.test(href)) return false;
+    e.preventDefault();
+    post("/api/open-external", { url: href }).then(function (r) {
+      if (!r || !r.ok) toast((r && r.error) || "Couldn't open the link.");
+    }).catch(function () {
+      toast("Couldn't open the link.");
+    });
+    return true;
+  }
+
   document.addEventListener("click", function (e) {
+    var anchor = e.target.closest ? e.target.closest("a[href]") : null;
+    if (openExternal(anchor, e)) return;
     var el = e.target.closest ? e.target.closest("[data-act]") : null;
     if (!el) return;
     var act = el.getAttribute("data-act");
-    if (act === "prev") { if (idx > 0) { idx--; render(); } }
-    else if (act === "next") { if (idx < articleCount()) { idx++; render(); } }
-    else if (act === "summary") { idx = 0; render(); }
+    if (act === "prev") { if (idx > 0) navigateTo(idx - 1); }
+    else if (act === "next") { if (idx < articleCount()) navigateTo(idx + 1); }
+    else if (act === "summary") { navigateTo(0); }
     else if (act === "openbyid") {
       var targetId = el.getAttribute("data-id") || "";
       try { targetId = decodeURIComponent(targetId); } catch (_) {}
       var targetIndex = data.articles.findIndex(function (article) { return article.id === targetId; });
-      if (targetIndex >= 0) { idx = targetIndex + 1; render(); }
+      if (targetIndex >= 0) navigateTo(targetIndex + 1);
     }
-    else if (act === "goarticles") { if (articleCount() > 0) { idx = 1; render(); } }
+    else if (act === "goarticles") { if (articleCount() > 0) navigateTo(1); }
     else if (act === "discuss") { doDiscuss(); }
     else if (act === "summarize") { doSummarize(); }
     else if (act === "markread") { doMarkRead(); }
     else if (act === "refresh") { load(true).then(function () { toast("Feed refreshed."); }); }
   });
 
+  document.addEventListener("auxclick", function (e) {
+    if (e.button !== 1) return;
+    var anchor = e.target.closest ? e.target.closest("a[href]") : null;
+    openExternal(anchor, e);
+  });
+
   document.addEventListener("keydown", function (e) {
     if (e.target && /input|textarea/i.test(e.target.tagName || "")) return;
-    if (e.key === "ArrowLeft" && idx > 0) { idx--; render(); }
-    else if (e.key === "ArrowRight" && idx < articleCount()) { idx++; render(); }
+    if (e.key === "ArrowLeft" && idx > 0) navigateTo(idx - 1);
+    else if (e.key === "ArrowRight" && idx < articleCount()) navigateTo(idx + 1);
   });
 
   load(false);
