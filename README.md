@@ -11,7 +11,7 @@ It turns the changelog into a focused reading experience inside Copilot:
 - 📄 **One article at a time** — full content rendered in a clean, forced **light theme**, with its source clearly labeled.
 - ✨ **AI summary page** — page 0 includes every unread GitHub Changelog and GitHub Next update, all official Azure DevOps product updates, and relevant news about GitHub, Copilot, AI and agentic development, VS Code, and code/SDLC security. Each summary bullet links directly to its article page inside the canvas.
 - 🗓️ **Last-read tracking** — remembers the date you last caught up, so "unread" actually means unread. One click to **Mark all read**.
-- 💬 **Discuss with Copilot** — on any article, start a conversation about it; the article's text is injected as context automatically.
+- 💬 **Discuss with Copilot** — on any article, get a concise, plain-language explanation of what changed, who would use it, and why it matters; the article's text is injected as context automatically.
 
 ## How it works
 
