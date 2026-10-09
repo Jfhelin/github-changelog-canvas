@@ -16,6 +16,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { joinSession, createCanvas, CanvasError } from "@github/copilot-sdk/extension";
 import { fetchEntries } from "./feed.mjs";
+import { normalizeScope, scopeCandidates, summaryRangeProperties, summaryScopeInstructions, validateSummary } from "./summary.mjs";
 import {
     loadState,
     markAllRead,
@@ -199,7 +200,8 @@ async function handleRequest(req, res, renderPage) {
         if (req.method === "POST" && url.pathname === "/api/summarize") {
             const view = await getView();
             const ok = await sendToCopilot(
-                "Please generate my unread developer news summary. Call get_unread_for_summary to fetch every candidate. " +
+                "Please generate my unread developer news summary. " + summaryScopeInstructions +
+                    " Call get_unread_for_summary to fetch every candidate within the requested scope. " +
                     "Include every GitHub Changelog and GitHub Next entry. Review every other entry, but include only articles " +
                     "matching the relevanceProfile returned by the action. Group entries under a ## heading matching each article's " +
                     "sourceName, then use short topic subheadings. Do not repeat source names in individual bullets. Keep " +
@@ -331,15 +333,29 @@ const canvas = createCanvas({
         {
             name: "get_unread_for_summary",
             description:
-                "Return every unread developer-news candidate. Include all GitHub Changelog and GitHub Next entries, then select relevant entries from other sources using relevanceProfile.",
-            handler: async () => {
+                "Return unread candidates within the user's requested publication range. Preserve prior date constraints. Include all GitHub Changelog and GitHub Next entries within this scope, then apply relevanceProfile to other sources.",
+            inputSchema: {
+                type: "object",
+                properties: summaryRangeProperties,
+                additionalProperties: false,
+            },
+            handler: async (ctx) => {
                 const view = await getView();
+                let scope;
+                try {
+                    scope = normalizeScope(ctx.input || {});
+                } catch (error) {
+                    throw new CanvasError("invalid_input", error.message);
+                }
+                const candidates = scopeCandidates(view.summaryCandidates, scope);
                 return {
                     status: view.status,
+                    scope,
+                    candidateIds: candidates.map((e) => e.id),
                     relevanceProfile:
-                        "Always include every GitHub Changelog and GitHub Next entry. From all other sources, include: GitHub or GitHub Copilot news not duplicated in those sources; all official Azure DevOps product updates, sprint notes, release announcements, and service changes; significant VS Code updates involving agents, AI, developer workflows, or broad developer impact; AI development; agentic changes for developers; code security; SDLC security; and major updates relevant to most developers. Exclude duplicate coverage and narrow product updates outside these areas.",
-                    candidateCount: view.status.reviewCount,
-                    articles: view.summaryCandidates.map((e) => ({
+                        "Within the returned scope, always include every GitHub Changelog and GitHub Next entry. From all other sources within that scope, include: GitHub or GitHub Copilot news not duplicated in those sources; all official Azure DevOps product updates, sprint notes, release announcements, and service changes; significant VS Code updates involving agents, AI, developer workflows, or broad developer impact; AI development; agentic changes for developers; code security; SDLC security; and major updates relevant to most developers. Exclude duplicate coverage and narrow product updates outside these areas.",
+                    candidateCount: candidates.length,
+                    articles: candidates.map((e) => ({
                         id: e.id,
                         title: e.title,
                         url: e.link,
@@ -356,10 +372,12 @@ const canvas = createCanvas({
         {
             name: "set_unread_summary",
             description:
-                "Store a Markdown summary of the user's unread changelog articles. It is shown on the summary page (page 0) of the Changelog reader. The unread set it applies to is captured automatically.",
+                "Save a summary for exactly the scope and candidateIds returned by get_unread_for_summary. Completeness is checked only within that range; older unread articles remain unread.",
             inputSchema: {
                 type: "object",
                 properties: {
+                    scope: { type: "object", properties: summaryRangeProperties, additionalProperties: false },
+                    candidateIds: { type: "array", items: { type: "string" }, description: "Exact candidateIds returned by get_unread_for_summary." },
                     markdown: { type: "string", description: "The Markdown summary to display on the summary page." },
                     relevantExternalIds: {
                         type: "array",
@@ -368,50 +386,22 @@ const canvas = createCanvas({
                             "Exact IDs of included articles that are not automatically included GitHub Changelog or GitHub Next entries. Use [] when none qualify.",
                     },
                 },
-                required: ["markdown", "relevantExternalIds"],
+                required: ["markdown", "relevantExternalIds", "scope", "candidateIds"],
             },
             handler: async (ctx) => {
                 const markdown = ctx.input && ctx.input.markdown;
-                if (!markdown || typeof markdown !== "string")
-                    throw new CanvasError("invalid_input", "Provide a non-empty 'markdown' string.");
                 const view = await getView();
                 const relevantIds = ctx.input && ctx.input.relevantExternalIds;
-                if (!Array.isArray(relevantIds))
-                    throw new CanvasError("invalid_input", "Provide 'relevantExternalIds' as an array.");
-                const validExternalIds = new Set(
-                    view.summaryCandidates.filter((e) => !isAlwaysIncluded(e)).map((e) => e.id)
-                );
-                const invalidIds = relevantIds.filter((id) => !validExternalIds.has(id));
-                if (invalidIds.length)
-                    throw new CanvasError("invalid_input", `Unknown external article ids: ${invalidIds.join(", ")}`);
-                const includedIds = new Set([
-                    ...view.summaryCandidates.filter(isAlwaysIncluded).map((e) => e.id),
-                    ...relevantIds,
-                ]);
-                const requiredSources = new Set(
-                    view.summaryCandidates.filter((e) => includedIds.has(e.id)).map((e) => e.sourceName)
-                );
-                const missingSources = [...requiredSources].filter((sourceName) => !markdown.includes(`## ${sourceName}`));
-                if (missingSources.length)
-                    throw new CanvasError(
-                        "invalid_input",
-                        `Add source headings for: ${missingSources.join(", ")}`
-                    );
-                const missingLinks = view.summaryCandidates
-                    .filter((e) => includedIds.has(e.id))
-                    .filter(
-                        (e) =>
-                            !markdown.includes(`(article:${e.id})`) &&
-                            !markdown.includes(`(article:${encodeURIComponent(e.id)})`)
-                    )
-                    .map((e) => e.id);
-                if (missingLinks.length)
-                    throw new CanvasError(
-                        "invalid_input",
-                        `Add internal article links for: ${missingLinks.join(", ")}`
-                    );
-                await setSummary(markdown, view.candidateIds, relevantIds);
-                return { ok: true, relevantExternalCount: relevantIds.length };
+                let scope, candidates, included;
+                try {
+                    scope = normalizeScope(ctx.input.scope);
+                    candidates = scopeCandidates(view.summaryCandidates, scope);
+                    included = validateSummary(markdown, candidates, ctx.input.candidateIds, relevantIds, isAlwaysIncluded);
+                } catch (error) {
+                    throw new CanvasError("invalid_input", error.message);
+                }
+                await setSummary(markdown, candidates.map((e) => e.id), relevantIds, scope);
+                return { ok: true, scope, includedCount: included.length, relevantExternalCount: relevantIds.length };
             },
         },
         {
@@ -464,13 +454,13 @@ session = await joinSession({
         onUserPromptSubmitted: async () => {
             try {
                 const state = await loadState();
-                if (!state.selectedId) return;
+                if (!state.selectedId) return { additionalContext: summaryScopeInstructions };
                 const entry = await findEntry({ id: state.selectedId });
                 if (!entry) return;
                 const text = (entry.contentText || "").slice(0, 6000);
                 return {
                     additionalContext:
-                        "The user is reading a developer news article in the reader canvas and may be asking about it.\n" +
+                        summaryScopeInstructions + "\nThe user is reading a developer news article in the reader canvas and may be asking about it.\n" +
                         "Selected article:\n" +
                         "Title: " + entry.title + "\n" +
                         "Date: " + (entry.date || "unknown") + "\n" +

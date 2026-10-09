@@ -5,6 +5,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { scopeCandidates } from "./summary.mjs";
 
 const COPILOT_HOME = process.env.COPILOT_HOME || join(homedir(), ".copilot");
 const STATE_PATH = join(COPILOT_HOME, "extensions", "changelog-reader", "artifacts", "state.json");
@@ -42,7 +43,7 @@ export async function setSelected(id) {
     return saveState({ ...state, selectedId: id || null });
 }
 
-export async function setSummary(markdown, candidateIds, relevantExternalIds) {
+export async function setSummary(markdown, candidateIds, relevantExternalIds, scope = {}) {
     const state = await loadState();
     return saveState({
         ...state,
@@ -50,6 +51,7 @@ export async function setSummary(markdown, candidateIds, relevantExternalIds) {
             markdown,
             candidateIds: candidateIds || [],
             relevantExternalIds: relevantExternalIds || [],
+            scope,
             generatedAtISO: new Date().toISOString(),
         },
     });
@@ -79,7 +81,9 @@ export function computeView(entries, state) {
     const summaryCandidates = annotated.filter((e) => e.isNew);
     const candidateIds = summaryCandidates.map((e) => e.id);
     const storedCandidateIds = state.summary && (state.summary.candidateIds || state.summary.unreadIds || []);
-    const summaryValid = !!(state.summary && sameSet(storedCandidateIds, candidateIds));
+    const scope = state.summary?.scope || {};
+    const scopedCandidates = scopeCandidates(summaryCandidates, scope);
+    const summaryValid = !!(state.summary && sameSet(storedCandidateIds, scopedCandidates.map((e) => e.id)));
     const storedRelevantIds =
         state.summary && (state.summary.relevantExternalIds || state.summary.relevantDevBlogIds || []);
     const relevantExternalIds = new Set(
@@ -107,7 +111,13 @@ export function computeView(entries, state) {
             firstVisit: !state.lastReadISO,
         },
         summary: state.summary
-            ? { markdown: state.summary.markdown, generatedAtISO: state.summary.generatedAtISO, valid: summaryValid }
+            ? {
+                markdown: state.summary.markdown,
+                generatedAtISO: state.summary.generatedAtISO,
+                valid: summaryValid,
+                scope,
+                includedCount: scopedCandidates.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id)).length,
+            }
             : null,
     };
 }

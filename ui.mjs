@@ -326,11 +326,17 @@ export function renderPage() {
     }
 
     var sum = data.summary;
-    var summaryCount = sum && sum.valid ? unread : reviewCount;
+    var summaryCount = sum && sum.valid ? sum.includedCount : reviewCount;
+    var scope = sum && sum.scope;
+    var rangeLabel = scope && (scope.after || scope.before)
+      ? " Publication range: " + (scope.after ? scope.after : "start of unread backlog") +
+        " to " + (scope.before ? scope.before + " (exclusive)" : "now") + "."
+      : "";
     var head =
       '<div class="summary-head"><h1>✨ Your unread summary</h1></div>' +
       '<p class="sub">' + summaryCount + " update" + (summaryCount === 1 ? "" : "s") +
-      (sum && sum.valid ? " relevant to you." : " to review across GitHub and other developer sources.") + "</p>";
+      (sum && sum.valid ? " in this summary. " + unread + " relevant updates remain unread overall." : " to review across GitHub and other developer sources.") +
+      esc(rangeLabel) + "</p>";
 
     if (generating) {
       app.innerHTML =
