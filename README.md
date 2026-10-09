@@ -30,9 +30,16 @@ The extension declares a canvas to the Copilot runtime via the `@github/copilot-
 - `list_changelog_entries` — recent entries, newest first (optionally only unread).
 - `get_changelog_article` — full readable text by id/url (or the selected article).
 - `get_selected_article` — the article the user picked via "Discuss with Copilot".
-- `get_unread_for_summary` — full text of every unread candidate plus the relevance profile.
-- `set_unread_summary` — store the Markdown summary and selected relevant external article IDs.
+- `get_unread_for_summary` — full text of unread candidates plus the relevance profile. Optional `after` (inclusive) and `before` (exclusive) ISO timestamps with explicit timezones restrict the publication range.
+- `set_unread_summary` — store the Markdown summary and selected relevant external article IDs, passing the returned `scope` and `candidateIds` unchanged. Validation requires all GitHub Changelog and GitHub Next entries **within that scope**, rejects out-of-scope links, and detects candidate changes.
 - `mark_changelog_read` / `changelog_status` — read-state management.
+
+Summary requests preserve date constraints from the conversation. Relative dates
+must be resolved using the current date and user's timezone before fetching.
+Omitting both bounds retains the all-unread behavior. A scoped summary displays
+its range and article count separately from the unread backlog; it does not mark
+older articles read. Existing summaries without a stored scope remain supported.
+Run regression tests with `node --test summary.test.mjs`.
 
 ## Install
 
