@@ -38,8 +38,23 @@ Summary requests preserve date constraints from the conversation. Relative dates
 must be resolved using the current date and user's timezone before fetching.
 Omitting both bounds retains the all-unread behavior. A scoped summary displays
 its range and article count separately from the unread backlog; it does not mark
-older articles read. Existing summaries without a stored scope remain supported.
-Run regression tests with `node --test summary.test.mjs`.
+older articles read. While a date-scoped summary is valid, navigation contains
+only its included articles and positions use the actual queue size (`1/23`).
+An empty scoped summary has no reading queue. Existing summaries without a
+stored date scope retain the original backlog browsing behavior.
+
+Feed pagination follows the requested or saved summary start, so busy weeks are
+not limited to three pages. Requests time out after 20 seconds. An unavailable
+source no longer blocks healthy feeds: the reader and status actions disclose
+source and later-page errors as **Coverage incomplete**. If every source fails,
+the reader displays an explicit error and Retry control. Read markers are not
+changed by feed failures. The Azure DevOps release-notes feed currently returns
+HTTP 404; no replacement has been verified, so its warning remains visible.
+Shared user state is re-read for each operation so other reader sessions and
+extension reinstalls cannot leave stale read markers or summaries in memory.
+Unreadable or malformed state is reported rather than silently reset.
+
+Run regression tests with `node --test`.
 
 ## Install
 

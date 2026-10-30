@@ -15,7 +15,7 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { joinSession, createCanvas, CanvasError } from "@github/copilot-sdk/extension";
-import { fetchEntries } from "./feed.mjs";
+import { fetchEntries, getFeedErrors } from "./feed.mjs";
 import { normalizeScope, scopeCandidates, summaryRangeProperties, summaryScopeInstructions, validateSummary } from "./summary.mjs";
 import {
     loadState,
@@ -33,17 +33,18 @@ const servers = new Map(); // instanceId -> { server, url }
 // the live session at request time.
 let session = null;
 
-async function getView({ force = false } = {}) {
+async function getView({ force = false, sinceISO = null } = {}) {
     const state = await loadState();
-    const entries = await fetchEntries({ minPages: MIN_PAGES, sinceISO: state.lastReadISO, force });
-    return computeView(entries, state);
+    const starts = [state.lastReadISO, state.summary?.scope?.after, sinceISO].filter(Boolean).sort();
+    const entries = await fetchEntries({ minPages: MIN_PAGES, sinceISO: starts[0] || null, force });
+    const view = computeView(entries, state);
+    view.status.feedErrors = getFeedErrors();
+    return view;
 }
 
-// The reading/navigation set: unread articles if any, else the full recent feed
-// (so the reader is still useful once you're caught up).
+// Navigate the valid summary's articles; otherwise preserve backlog browsing.
 function navArticles(view) {
-    const base = view.status.unreadCount > 0 ? view.unread : view.entries;
-    return base.map((e) => ({
+    return view.navigationEntries.map((e) => ({
         id: e.id,
         title: e.title,
         url: e.link,
@@ -59,7 +60,8 @@ function navArticles(view) {
 
 async function findEntry({ id, url } = {}) {
     const state = await loadState();
-    const entries = await fetchEntries({ minPages: MIN_PAGES, sinceISO: state.lastReadISO });
+    const starts = [state.lastReadISO, state.summary?.scope?.after].filter(Boolean).sort();
+    const entries = await fetchEntries({ minPages: MIN_PAGES, sinceISO: starts[0] || null });
     if (id) {
         const byId = entries.find((e) => e.id === id);
         if (byId) return byId;
@@ -122,14 +124,9 @@ function openExternalUrl(url) {
 }
 
 async function sendToCopilot(prompt) {
-    if (!session) return false;
-    try {
-        // Fire-and-forget: injects a user turn into this session so the agent runs.
-        session.send(prompt);
-        return true;
-    } catch {
-        return false;
-    }
+    if (!session) throw new Error("Copilot is not connected. Retry when the reader is ready.");
+    await session.send(prompt);
+    return true;
 }
 
 async function handleRequest(req, res, renderPage) {
@@ -340,13 +337,13 @@ const canvas = createCanvas({
                 additionalProperties: false,
             },
             handler: async (ctx) => {
-                const view = await getView();
                 let scope;
                 try {
                     scope = normalizeScope(ctx.input || {});
                 } catch (error) {
                     throw new CanvasError("invalid_input", error.message);
                 }
+                const view = await getView({ sinceISO: scope.after });
                 const candidates = scopeCandidates(view.summaryCandidates, scope);
                 return {
                     status: view.status,
@@ -390,18 +387,22 @@ const canvas = createCanvas({
             },
             handler: async (ctx) => {
                 const markdown = ctx.input && ctx.input.markdown;
-                const view = await getView();
                 const relevantIds = ctx.input && ctx.input.relevantExternalIds;
                 let scope, candidates, included;
                 try {
                     scope = normalizeScope(ctx.input.scope);
+                } catch (error) {
+                    throw new CanvasError("invalid_input", error.message);
+                }
+                const view = await getView({ sinceISO: scope.after });
+                try {
                     candidates = scopeCandidates(view.summaryCandidates, scope);
                     included = validateSummary(markdown, candidates, ctx.input.candidateIds, relevantIds, isAlwaysIncluded);
                 } catch (error) {
                     throw new CanvasError("invalid_input", error.message);
                 }
                 await setSummary(markdown, candidates.map((e) => e.id), relevantIds, scope);
-                return { ok: true, scope, includedCount: included.length, relevantExternalCount: relevantIds.length };
+                return { ok: true, scope, includedCount: included.length, relevantExternalCount: relevantIds.length, feedErrors: view.status.feedErrors };
             },
         },
         {
@@ -457,7 +458,7 @@ session = await joinSession({
                 if (!state.selectedId) return { additionalContext: summaryScopeInstructions };
                 const entry = await findEntry({ id: state.selectedId });
                 if (!entry) return;
-                const text = (entry.contentText || "").slice(0, 6000);
+                const text = entry.contentText || "";
                 return {
                     additionalContext:
                         summaryScopeInstructions + "\nThe user is reading a developer news article in the reader canvas and may be asking about it.\n" +
