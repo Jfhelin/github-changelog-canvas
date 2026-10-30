@@ -158,6 +158,7 @@ export function renderPage() {
   var data = { status: {}, summary: null, articles: [] };
   var idx = 0;            // 0 = summary page, 1..N = article pages
   var generating = false;
+  var loadError = null;
   var toastTimer = null;
 
   var app = document.getElementById("app");
@@ -172,7 +173,17 @@ export function renderPage() {
   var toastEl = document.getElementById("toast");
 
   function api(path, opts) {
-    return fetch(path, opts || {}).then(function (r) { return r.json(); });
+    return fetch(path, opts || {}).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (body) {
+          throw new Error(body.error || ("Request failed: " + r.status));
+        });
+      }
+      return r.json().then(function (body) {
+        if (body.error) throw new Error(body.error);
+        return body;
+      });
+    });
   }
   function post(path, body) {
     return api(path, {
@@ -241,15 +252,16 @@ export function renderPage() {
 
   function renderHeader() {
     var st = data.status || {};
+    var n = articleCount();
     var txt;
-    if (st.firstVisit) txt = "First visit — " + (st.reviewCount || 0) + " updates to review";
+    if (data.summary && data.summary.valid) txt = n + " updates in this summary";
+    else if (st.firstVisit) txt = "First visit — " + (st.reviewCount || 0) + " updates to review";
     else if ((st.reviewCount || 0) > 0 && !st.summaryReady) txt = (st.reviewCount || 0) + " updates awaiting relevance review";
     else if ((st.reviewCount || 0) > 0) txt = (st.unreadCount || 0) + " relevant updates since " + (fmtDate(st.lastReadISO) || "last visit");
     else txt = "All caught up · last read " + (fmtDate(st.lastReadISO) || "—");
     elStatus.textContent = txt;
 
-    var n = articleCount();
-    elPos.textContent = idx === 0 ? "Summary" : ("Article " + idx + " / " + n);
+    elPos.textContent = idx === 0 ? "Summary" : (idx + "/" + n);
     btnPrev.disabled = idx === 0;
     btnSummary.disabled = idx === 0;
     btnNext.disabled = idx >= n;
@@ -312,7 +324,7 @@ export function renderPage() {
     var unread = st.unreadCount || 0;
     var reviewCount = st.reviewCount || 0;
 
-    if (reviewCount === 0) {
+    if (reviewCount === 0 && !(data.summary && data.summary.valid)) {
       app.innerHTML =
         '<div class="card center">' +
         '<div class="empty-ico">🎉</div>' +
@@ -351,7 +363,7 @@ export function renderPage() {
         '<div class="card">' + head +
         '<div class="md">' + mdToHtml(sum.markdown) + "</div>" +
         '<div class="footbtns">' +
-          '<button class="primary" data-act="goarticles">Start reading ▶</button>' +
+          (articleCount() > 0 ? '<button class="primary" data-act="goarticles">Start reading ▶</button>' : "") +
           '<button data-act="summarize">↻ Regenerate</button>' +
         "</div></div>";
       return;
@@ -369,7 +381,24 @@ export function renderPage() {
       "</div></div>";
   }
 
-  function render() { clampIdx(); renderHeader(); renderBody(); }
+  function render() {
+    if (loadError) {
+      elStatus.textContent = "Unable to load news";
+      elPos.textContent = "";
+      btnPrev.disabled = btnSummary.disabled = btnNext.disabled = btnMark.disabled = true;
+      btnDiscuss.style.display = "none";
+      app.innerHTML = '<div class="card" role="alert"><h1>Unable to load news</h1><p>' +
+        esc(loadError) + '</p><button data-act="refresh">Retry</button></div>';
+      return;
+    }
+    clampIdx(); renderHeader(); renderBody();
+    var errors = (data.status && data.status.feedErrors) || [];
+    if (errors.length) {
+      app.insertAdjacentHTML("afterbegin", '<div class="card" role="status"><strong>Coverage incomplete</strong><p>' +
+        errors.map(function (error) { return esc(error.source + ": " + error.message); }).join("<br>") +
+        "</p><p>Available sources are shown. Unavailable sources have not been marked read.</p></div>");
+    }
+  }
 
   function navigateTo(nextIdx) {
     idx = nextIdx;
@@ -383,7 +412,16 @@ export function renderPage() {
   }
 
   function load(force) {
-    return api("/api/state" + (force ? "?force=1" : "")).then(setState);
+    return api("/api/state" + (force ? "?force=1" : "")).then(function (state) {
+      loadError = null;
+      setState(state);
+      return true;
+    }).catch(function (error) {
+      loadError = error.message;
+      render();
+      toast(error.message);
+      return false;
+    });
   }
 
   function pollSummary() {
@@ -398,6 +436,8 @@ export function renderPage() {
         if (tries >= 30) { generating = false; render(); toast("Still working — check the Copilot chat."); return; }
         render();
         setTimeout(step, 3000);
+      }).catch(function (error) {
+        generating = false; render(); toast(error.message);
       });
     }
     setTimeout(step, 3000);
@@ -409,6 +449,8 @@ export function renderPage() {
     if (!id) { toast("Open an article first."); return; }
     post("/api/discuss", { id: id }).then(function (r) {
       toast(r && r.ok ? "Sent to Copilot — check the chat panel." : "Couldn't reach Copilot.");
+    }).catch(function (error) {
+      toast(error.message);
     });
   }
   function doSummarize() {
@@ -416,6 +458,8 @@ export function renderPage() {
     post("/api/summarize", {}).then(function (r) {
       if (!r || !r.ok) { generating = false; render(); toast("Couldn't reach Copilot."); return; }
       pollSummary();
+    }).catch(function (error) {
+      generating = false; render(); toast(error.message);
     });
   }
   function doMarkRead() {
@@ -424,6 +468,8 @@ export function renderPage() {
       idx = 0;
       setState(s);
       toast(n > 0 ? ("Marked " + n + " as read.") : "Already up to date.");
+    }).catch(function (error) {
+      toast(error.message);
     });
   }
 
@@ -446,6 +492,7 @@ export function renderPage() {
     var el = e.target.closest ? e.target.closest("[data-act]") : null;
     if (!el) return;
     var act = el.getAttribute("data-act");
+    if (loadError && act !== "refresh") return;
     if (act === "prev") { if (idx > 0) navigateTo(idx - 1); }
     else if (act === "next") { if (idx < articleCount()) navigateTo(idx + 1); }
     else if (act === "summary") { navigateTo(0); }
@@ -459,7 +506,7 @@ export function renderPage() {
     else if (act === "discuss") { doDiscuss(); }
     else if (act === "summarize") { doSummarize(); }
     else if (act === "markread") { doMarkRead(); }
-    else if (act === "refresh") { load(true).then(function () { toast("Feed refreshed."); }); }
+    else if (act === "refresh") { load(true).then(function (loaded) { if (loaded) toast("Feed refreshed."); }); }
   });
 
   document.addEventListener("auxclick", function (e) {
@@ -469,6 +516,7 @@ export function renderPage() {
   });
 
   document.addEventListener("keydown", function (e) {
+    if (loadError) return;
     if (e.target && /input|textarea/i.test(e.target.tagName || "")) return;
     if (e.key === "ArrowLeft" && idx > 0) navigateTo(idx - 1);
     else if (e.key === "ArrowRight" && idx < articleCount()) navigateTo(idx + 1);

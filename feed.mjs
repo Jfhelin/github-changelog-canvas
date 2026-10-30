@@ -60,7 +60,7 @@ const SOURCES = [
 ];
 
 // In-memory cache so re-opens / repeated state calls don't hammer the feeds.
-let cache = { at: 0, sinceISO: null, minPages: 0, entries: [] };
+let cache = { at: 0, sinceISO: null, minPages: 0, entries: [], errors: [] };
 const CACHE_MS = 5 * 60 * 1000;
 const MAX_PAGES = 50;
 
@@ -262,6 +262,7 @@ async function fetchPage(source, paged) {
     const url = paged > 1 ? `${source.feedUrl}${separator}paged=${paged}` : source.feedUrl;
     const res = await fetch(url, {
         headers: { "User-Agent": "copilot-news-reader/1.0", Accept: "application/rss+xml, text/xml" },
+        signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) throw new Error(`Feed request failed: ${res.status} ${res.statusText}`);
     return res.text();
@@ -271,6 +272,7 @@ async function fetchSource(source, { minPages, sinceISO }) {
     const cutoff = sinceISO ? Date.parse(sinceISO) : null;
     const seen = new Set();
     const entries = [];
+    const errors = [];
 
     for (let page = 1; page <= MAX_PAGES; page++) {
         let xml;
@@ -278,22 +280,37 @@ async function fetchSource(source, { minPages, sinceISO }) {
             xml = await fetchPage(source, page);
         } catch (err) {
             if (page === 1) throw err;
+            errors.push({ source: source.name, url: source.feedUrl, message: `Page ${page}: ${err.message}` });
             break;
         }
         const items = parseEntries(xml, source);
         if (!items.length) break;
+        let added = 0;
         for (const item of items) {
             if (seen.has(item.id)) continue;
             seen.add(item.id);
             entries.push(item);
+            added++;
         }
         if (source.paginated === false) break;
 
         const pageDates = items.map((item) => Date.parse(item.date || 0)).filter(Number.isFinite);
         const coveredCutoff = cutoff !== null && pageDates.length > 0 && Math.min(...pageDates) <= cutoff;
         if (page >= minPages && (cutoff === null || coveredCutoff)) break;
+        if (!added || page === MAX_PAGES) {
+            errors.push({
+                source: source.name, url: source.feedUrl,
+                message: !added ? `Page ${page}: feed repeated articles before covering the requested range.`
+                    : `Reached the ${MAX_PAGES}-page limit before covering the requested range.`,
+            });
+            break;
+        }
     }
-    return entries;
+    return { entries, errors };
+}
+
+export function getFeedErrors() {
+    return cache.errors.map((error) => ({ ...error }));
 }
 
 export async function fetchEntries({ minPages = 3, sinceISO = null, force = false } = {}) {
@@ -308,7 +325,20 @@ export async function fetchEntries({ minPages = 3, sinceISO = null, force = fals
         return cache.entries;
     }
 
-    const perSource = await Promise.all(SOURCES.map((source) => fetchSource(source, { minPages, sinceISO })));
+    const results = await Promise.allSettled(SOURCES.map((source) => fetchSource(source, { minPages, sinceISO })));
+    const perSource = [];
+    const errors = [];
+    for (const [index, result] of results.entries()) {
+        if (result.status === "fulfilled") {
+            perSource.push(result.value.entries);
+            errors.push(...result.value.errors);
+        } else {
+            errors.push({ source: SOURCES[index].name, url: SOURCES[index].feedUrl, message: result.reason.message });
+        }
+    }
+    if (!perSource.length) {
+        throw new Error(`All news feeds failed: ${errors.map((error) => `${error.source}: ${error.message}`).join("; ")}`);
+    }
     const seenIds = new Set();
     const seenLinks = new Set();
     const entries = perSource.flat().filter((entry) => {
@@ -319,6 +349,6 @@ export async function fetchEntries({ minPages = 3, sinceISO = null, force = fals
         return true;
     });
     entries.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-    cache = { at: now, sinceISO, minPages, entries };
+    cache = { at: now, sinceISO, minPages, entries, errors };
     return entries;
 }
