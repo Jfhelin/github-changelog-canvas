@@ -50,6 +50,9 @@ source and later-page errors as **Coverage incomplete**. If every source fails,
 the reader displays an explicit error and Retry control. Read markers are not
 changed by feed failures. The Azure DevOps release-notes feed currently returns
 HTTP 404; no replacement has been verified, so its warning remains visible.
+Shared user state is re-read for each operation so other reader sessions and
+extension reinstalls cannot leave stale read markers or summaries in memory.
+Unreadable or malformed state is reported rather than silently reset.
 
 Run regression tests with `node --test`.
 

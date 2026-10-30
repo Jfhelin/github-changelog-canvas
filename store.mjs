@@ -12,21 +12,17 @@ const STATE_PATH = join(COPILOT_HOME, "extensions", "changelog-reader", "artifac
 
 const DEFAULT_STATE = { lastReadISO: null, selectedId: null, summary: null };
 
-let memo = null;
-
 export async function loadState() {
-    if (memo) return memo;
     try {
         const raw = await readFile(STATE_PATH, "utf8");
-        memo = { ...DEFAULT_STATE, ...JSON.parse(raw) };
-    } catch {
-        memo = { ...DEFAULT_STATE };
+        return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+    } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        return { ...DEFAULT_STATE };
     }
-    return memo;
 }
 
 async function saveState(state) {
-    memo = state;
     await mkdir(dirname(STATE_PATH), { recursive: true });
     await writeFile(STATE_PATH, JSON.stringify(state, null, 2), "utf8");
     return state;

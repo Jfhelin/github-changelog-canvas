@@ -98,4 +98,9 @@ test("actions, HTTP navigation, lookup and discussion share the saved scope with
         assert.match(rejected.body.error, /message rejected/);
     }
     assert.equal(JSON.parse(await readFile(statePath, "utf8")).lastReadISO, marker);
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify({ ...state, selectedId: "page-4" }));
+    assert.equal((await action("changelog_status")).selectedId, "page-4");
+    await writeFile(statePath, "invalid state");
+    await assert.rejects(action("changelog_status"), SyntaxError);
 });
