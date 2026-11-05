@@ -12,24 +12,25 @@ It turns the changelog into a focused reading experience inside Copilot:
 - 🌐 **External links stay external** — article titles and links in article content open in your default web browser instead of replacing the reader canvas.
 - ✨ **AI summary page** — page 0 includes every unread GitHub Changelog and GitHub Next update, all official Azure DevOps product updates, and relevant news about GitHub, Copilot, AI and agentic development, VS Code, and code/SDLC security. Each summary bullet links directly to its article page inside the canvas.
 - 🗓️ **Last-read tracking** — remembers the date you last caught up, so "unread" actually means unread. One click to **Mark all read**.
-- 💬 **Discuss with Copilot** — on any article, get a concise, plain-language explanation of what changed, who would use it, and why it matters; the article's text is injected as context automatically.
+- 💬 **Discuss with Copilot** — on any article, get a concise, plain-language explanation of what changed, who would use it, and why it matters; the article's text is injected as context for that handoff only, in that conversation.
 
 ## How it works
 
-The extension declares a canvas to the Copilot runtime via the `@github/copilot-sdk`. Each open canvas instance runs a tiny loopback HTTP server that serves the reading UI and JSON state endpoints. A few agent-callable actions and an `onUserPromptSubmitted` hook connect the reader to the chat:
+The extension declares a canvas to the Copilot runtime via the `@github/copilot-sdk`. Each open canvas instance runs a tiny loopback HTTP server that serves the reading UI and JSON state endpoints. A few agent-callable actions, explicit chat handoffs, and a narrowly scoped `onUserPromptSubmitted` hook connect the reader to the chat:
 
 | File | Responsibility |
 |------|----------------|
-| `extension.mjs` | Wiring: HTTP server per instance, canvas + actions, `session.send` endpoints (`/api/discuss`, `/api/summarize`), the context hook. |
+| `extension.mjs` | Wiring: HTTP server per instance, canvas + actions, `session.send` endpoints (`/api/discuss`, `/api/summarize`), the handoff-only context hook. |
+| `context.mjs` | Session-local, in-memory state: the article selected for discussion and pending reader handoffs, keyed by runtime session ID. |
 | `feed.mjs` | Fetch + parse RSS and Atom sources for GitHub Changelog, GitHub Next, Microsoft Developer Blogs, Azure DevOps, and VS Code; deduplicate, sanitize HTML, extract plain text, and cache. |
-| `store.mjs` | Durable per-user state (last-read date, selection, generated summary, relevant external article IDs) under `$COPILOT_HOME/extensions/changelog-reader/artifacts/`. |
+| `store.mjs` | Durable per-user state shared by all sessions (last-read date, generated summary, relevant external article IDs) under `$COPILOT_HOME/extensions/changelog-reader/artifacts/`. |
 | `ui.mjs` | The light-mode reading pane: header navigator, single-article view, summary page, and a tiny Markdown renderer. |
 
 ### Agent actions
 
 - `list_changelog_entries` — recent entries, newest first (optionally only unread).
 - `get_changelog_article` — full readable text by id/url (or the selected article).
-- `get_selected_article` — the article the user picked via "Discuss with Copilot".
+- `get_selected_article` — the article the user picked via "Discuss with Copilot" in the current conversation.
 - `get_unread_for_summary` — full text of unread candidates plus the relevance profile. Optional `after` (inclusive) and `before` (exclusive) ISO timestamps with explicit timezones restrict the publication range.
 - `set_unread_summary` — store the Markdown summary and selected relevant external article IDs, passing the returned `scope` and `candidateIds` unchanged. Validation requires all GitHub Changelog and GitHub Next entries **within that scope**, rejects out-of-scope links, and detects candidate changes.
 - `mark_changelog_read` / `changelog_status` — read-state management.
@@ -54,6 +55,25 @@ Shared user state is re-read for each operation so other reader sessions and
 extension reinstalls cannot leave stale read markers or summaries in memory.
 Unreadable or malformed state is reported rather than silently reset.
 
+### Conversation scoping
+
+Developer News context never leaks into unrelated conversations or repositories:
+
+- Feed caches, read markers, and saved summaries are global; the article being
+  discussed is **session-local** (keyed by the SDK-supplied `sessionId`) and is
+  kept only in memory. A legacy `selectedId` in `state.json` is ignored and left
+  untouched.
+- The prompt hook injects nothing for ordinary prompts. It adds article content
+  only to the exact prompt sent by **Discuss with Copilot** in the same
+  conversation, once. Follow-ups rely on conversation history or
+  `get_selected_article`.
+- **Generate summary** sends a self-contained prompt that carries the date-range
+  rules; the same rules are in the `get_unread_for_summary` description, so
+  chat-requested digests follow them without global prompt injection.
+- An installed extension, an open canvas, or a selection made in another
+  conversation does not activate news context. A reader opened for one
+  conversation cannot send prompts into another.
+
 Run regression tests with `node --test`.
 
 ## Install
@@ -69,6 +89,14 @@ git clone https://github.com/Jfhelin/github-changelog-canvas.git \
 ```
 
 Then reload extensions in Copilot CLI (or restart it) and open the **Developer News** canvas.
+
+### Updating an existing install
+
+Extensions are loaded per session and keep running old code until restarted.
+After updating the files (`git -C ~/.copilot/extensions/changelog-reader pull`,
+or copying `*.mjs` into that folder), reload extensions or restart Copilot, and
+start new conversations (`/clear` also reloads extensions) so every session runs
+the new version. `artifacts/state.json` (read markers and summaries) is kept as-is.
 
 > The `@github/copilot-sdk` import is resolved automatically by the Copilot CLI — no `package.json` or `node_modules` required.
 
