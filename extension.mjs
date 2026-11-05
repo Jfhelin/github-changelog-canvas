@@ -6,7 +6,8 @@
 //
 // Pieces:
 //   feed.mjs  — fetch + parse the GitHub and Microsoft RSS feeds
-//   store.mjs — durable last-read date + selection + generated summary
+//   store.mjs — durable last-read date + generated summary (shared by sessions)
+//   context.mjs — session-local selected article + pending chat handoffs
 //   ui.mjs    — the light-mode reading pane (header nav + single article)
 // This file wires an HTTP server per canvas instance, the agent-callable
 // actions, and endpoints the iframe POSTs to (which drive the agent via
@@ -20,25 +21,27 @@ import { normalizeScope, scopeCandidates, summaryRangeProperties, summaryScopeIn
 import {
     loadState,
     markAllRead,
-    setSelected,
     setSummary,
     computeView,
     isAlwaysIncluded,
 } from "./store.mjs";
+import { createReaderContext } from "./context.mjs";
 
 const MIN_PAGES = 3;
-const servers = new Map(); // instanceId -> { server, url }
+const servers = new Map(); // instanceId -> { server, url, sessionId }
+const readerContext = createReaderContext();
 
 // Hoisted so HTTP handlers created before joinSession resolves can still reach
 // the live session at request time.
 let session = null;
 
-async function getView({ force = false, sinceISO = null } = {}) {
+async function getView({ force = false, sinceISO = null, sessionId = null } = {}) {
     const state = await loadState();
     const starts = [state.lastReadISO, state.summary?.scope?.after, sinceISO].filter(Boolean).sort();
     const entries = await fetchEntries({ minPages: MIN_PAGES, sinceISO: starts[0] || null, force });
     const view = computeView(entries, state);
     view.status.feedErrors = getFeedErrors();
+    view.status.selectedId = readerContext.selectedId(sessionId);
     return view;
 }
 
@@ -123,13 +126,58 @@ function openExternalUrl(url) {
     });
 }
 
-async function sendToCopilot(prompt) {
+function assertOwnSession(sessionId) {
     if (!session) throw new Error("Copilot is not connected. Retry when the reader is ready.");
-    await session.send(prompt);
+    if (sessionId && session.sessionId && sessionId !== session.sessionId)
+        throw new Error("This reader belongs to a different conversation. Reopen Developer News here.");
+}
+
+// Send a reader-initiated prompt to the conversation that owns this canvas.
+// Article handoffs are registered first so the prompt hook injects the article
+// for exactly this prompt in exactly this session, and for nothing else.
+async function sendToCopilot(sessionId, prompt, handoff = null) {
+    assertOwnSession(sessionId);
+    const targetId = session.sessionId || sessionId;
+    const queued = handoff ? readerContext.queueHandoff(targetId, { ...handoff, prompt }) : null;
+    try {
+        await session.send(prompt);
+    } catch (error) {
+        if (queued) readerContext.cancelHandoff(targetId, queued);
+        throw error;
+    }
     return true;
 }
 
-async function handleRequest(req, res, renderPage) {
+function articleContext(entry) {
+    return (
+        "The user clicked 'Discuss with Copilot' on this developer news article in the reader canvas.\n" +
+        "Selected article:\n" +
+        "Title: " + entry.title + "\n" +
+        "Date: " + (entry.date || "unknown") + "\n" +
+        "URL: " + entry.link + "\n" +
+        "Source: " + entry.sourceName + "\n" +
+        (entry.categories && entry.categories.length ? "Categories: " + entry.categories.join(", ") + "\n" : "") +
+        "\nArticle content:\n" + (entry.contentText || "")
+    );
+}
+
+// Prompt hook: inject article content only for the reader's own "Discuss with
+// Copilot" handoff in this session. Ordinary prompts, other sessions, an open
+// canvas, or a saved selection never receive Developer News context.
+export async function onUserPromptSubmitted(input, invocation) {
+    const sessionId = invocation?.sessionId || input?.sessionId || session?.sessionId;
+    const handoff = readerContext.consumeHandoff(sessionId, input?.prompt);
+    if (!handoff || handoff.kind !== "article") return;
+    try {
+        const entry = await findEntry({ id: handoff.articleId });
+        if (!entry) return;
+        return { additionalContext: articleContext(entry) };
+    } catch {
+        return;
+    }
+}
+
+async function handleRequest(req, res, renderPage, sessionId) {
     const url = new URL(req.url, "http://127.0.0.1");
     try {
         if (req.method === "GET" && url.pathname === "/") {
@@ -139,14 +187,14 @@ async function handleRequest(req, res, renderPage) {
         }
         if (req.method === "GET" && url.pathname === "/api/state") {
             const force = url.searchParams.get("force") === "1";
-            const view = await getView({ force });
+            const view = await getView({ force, sessionId });
             json(res, 200, { status: view.status, summary: view.summary, articles: navArticles(view) });
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/markread") {
-            const before = await getView();
+            const before = await getView({ sessionId });
             await markAllRead();
-            const after = await getView();
+            const after = await getView({ sessionId });
             json(res, 200, {
                 status: after.status,
                 summary: after.summary,
@@ -157,7 +205,7 @@ async function handleRequest(req, res, renderPage) {
         }
         if (req.method === "POST" && url.pathname === "/api/select") {
             const body = await readBody(req);
-            await setSelected(body.id || null);
+            readerContext.select(sessionId, body.id || null);
             json(res, 200, { ok: true, selectedId: body.id || null });
             return;
         }
@@ -179,8 +227,10 @@ async function handleRequest(req, res, renderPage) {
                 json(res, 404, { ok: false, error: "Article not found." });
                 return;
             }
-            await setSelected(entry.id);
+            assertOwnSession(sessionId);
+            readerContext.select(sessionId, entry.id);
             const ok = await sendToCopilot(
+                sessionId,
                 "I'd like to discuss this developer news article from " +
                     entry.sourceName +
                     ': "' +
@@ -189,14 +239,17 @@ async function handleRequest(req, res, renderPage) {
                     entry.link +
                     "). For your first reply, give a concise, plain-language explanation for someone unfamiliar with the topic. " +
                     "Explain what changed, who would use it, when they would use it, and why they should care. " +
-                    "Do not ask a follow-up question or present multiple-choice options or a menu of topics in that first reply."
+                    "Do not ask a follow-up question or present multiple-choice options or a menu of topics in that first reply. " +
+                    "If the article text is not already in context, call get_selected_article on the Developer News canvas.",
+                { kind: "article", articleId: entry.id }
             );
             json(res, 200, { ok, selectedId: entry.id });
             return;
         }
         if (req.method === "POST" && url.pathname === "/api/summarize") {
-            const view = await getView();
+            const view = await getView({ sessionId });
             const ok = await sendToCopilot(
+                sessionId,
                 "Please generate my unread developer news summary. " + summaryScopeInstructions +
                     " Call get_unread_for_summary to fetch every candidate within the requested scope. " +
                     "Include every GitHub Changelog and GitHub Next entry. Review every other entry, but include only articles " +
@@ -217,13 +270,17 @@ async function handleRequest(req, res, renderPage) {
     }
 }
 
-async function startServer() {
+async function startServer(sessionId) {
     const { renderPage } = await import("./ui.mjs");
-    const server = createServer((req, res) => handleRequest(req, res, renderPage));
+    const server = createServer((req, res) => handleRequest(req, res, renderPage, sessionId));
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 0;
-    return { server, url: `http://127.0.0.1:${port}/` };
+    return { server, url: `http://127.0.0.1:${port}/`, sessionId };
+}
+
+function canvasSessionId(ctx) {
+    return (ctx && ctx.sessionId) || (session && session.sessionId) || null;
 }
 
 const canvas = createCanvas({
@@ -244,7 +301,7 @@ const canvas = createCanvas({
                 },
             },
             handler: async (ctx) => {
-                const { entries, status } = await getView();
+                const { entries, status } = await getView({ sessionId: canvasSessionId(ctx) });
                 const onlyNew = ctx.input && ctx.input.onlyNew;
                 const limit = (ctx.input && ctx.input.limit) || 30;
                 const filtered = (onlyNew ? entries.filter((e) => e.isNew) : entries).slice(0, limit);
@@ -268,7 +325,7 @@ const canvas = createCanvas({
         {
             name: "get_changelog_article",
             description:
-                "Get the full readable text of a changelog article by id or url. If neither is given, returns the article the user selected via 'Discuss with Copilot'.",
+                "Get the full readable text of a changelog article by id or url. If neither is given, returns the article the user selected via 'Discuss with Copilot' in this conversation.",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -279,8 +336,8 @@ const canvas = createCanvas({
             handler: async (ctx) => {
                 let entry = await findEntry(ctx.input || {});
                 if (!entry && !(ctx.input && (ctx.input.id || ctx.input.url))) {
-                    const state = await loadState();
-                    if (state.selectedId) entry = await findEntry({ id: state.selectedId });
+                    const selectedId = readerContext.selectedId(canvasSessionId(ctx));
+                    if (selectedId) entry = await findEntry({ id: selectedId });
                 }
                 if (!entry)
                     throw new CanvasError(
@@ -303,15 +360,15 @@ const canvas = createCanvas({
         {
             name: "get_selected_article",
             description:
-                "Return the changelog article the user selected in the reader via 'Discuss with Copilot', with full readable text. Errors if nothing is selected.",
-            handler: async () => {
-                const state = await loadState();
-                if (!state.selectedId)
+                "Return the changelog article the user selected in the reader via 'Discuss with Copilot' in this conversation, with full readable text. Errors if nothing is selected here.",
+            handler: async (ctx) => {
+                const selectedId = readerContext.selectedId(canvasSessionId(ctx));
+                if (!selectedId)
                     throw new CanvasError(
                         "no_selection",
-                        "No article is selected. Ask the user to click 'Discuss with Copilot' on an entry."
+                        "No article is selected in this conversation. Ask the user to click 'Discuss with Copilot' on an entry."
                     );
-                const entry = await findEntry({ id: state.selectedId });
+                const entry = await findEntry({ id: selectedId });
                 if (!entry)
                     throw new CanvasError("not_found", "The selected article is no longer in the recent feed window.");
                 return {
@@ -330,7 +387,7 @@ const canvas = createCanvas({
         {
             name: "get_unread_for_summary",
             description:
-                "Return unread candidates within the user's requested publication range. Preserve prior date constraints. Include all GitHub Changelog and GitHub Next entries within this scope, then apply relevanceProfile to other sources.",
+                "Return unread candidates within the user's requested publication range. Include all GitHub Changelog and GitHub Next entries within this scope, then apply relevanceProfile to other sources. " + summaryScopeInstructions,
             inputSchema: {
                 type: "object",
                 properties: summaryRangeProperties,
@@ -343,7 +400,7 @@ const canvas = createCanvas({
                 } catch (error) {
                     throw new CanvasError("invalid_input", error.message);
                 }
-                const view = await getView({ sinceISO: scope.after });
+                const view = await getView({ sinceISO: scope.after, sessionId: canvasSessionId(ctx) });
                 const candidates = scopeCandidates(view.summaryCandidates, scope);
                 return {
                     status: view.status,
@@ -408,8 +465,8 @@ const canvas = createCanvas({
         {
             name: "mark_changelog_read",
             description: "Mark all reviewed developer news entries as read as of now.",
-            handler: async () => {
-                const before = await getView();
+            handler: async (ctx) => {
+                const before = await getView({ sessionId: canvasSessionId(ctx) });
                 await markAllRead();
                 return { ok: true, markedRead: before.status.reviewCount, lastReadISO: (await loadState()).lastReadISO };
             },
@@ -417,8 +474,8 @@ const canvas = createCanvas({
         {
             name: "changelog_status",
             description: "Return reading status for GitHub Changelog, GitHub Next, and relevant developer news.",
-            handler: async () => {
-                const { status } = await getView();
+            handler: async (ctx) => {
+                const { status } = await getView({ sessionId: canvasSessionId(ctx) });
                 return status;
             },
         },
@@ -426,12 +483,12 @@ const canvas = createCanvas({
     open: async (ctx) => {
         let entry = servers.get(ctx.instanceId);
         if (!entry) {
-            entry = await startServer();
+            entry = await startServer(canvasSessionId(ctx));
             servers.set(ctx.instanceId, entry);
         }
         let title = "Developer News";
         try {
-            const { status } = await getView();
+            const { status } = await getView({ sessionId: canvasSessionId(ctx) });
             if (status.unreadCount > 0) title = `Developer News (${status.unreadCount} unread)`;
         } catch {
             /* keep default title if feed fetch fails on open */
@@ -449,34 +506,7 @@ const canvas = createCanvas({
 
 session = await joinSession({
     canvases: [canvas],
-    hooks: {
-        // When the user has selected an article ("Discuss with Copilot"), silently
-        // give the agent that article's text so chatting about it just works.
-        onUserPromptSubmitted: async () => {
-            try {
-                const state = await loadState();
-                if (!state.selectedId) return { additionalContext: summaryScopeInstructions };
-                const entry = await findEntry({ id: state.selectedId });
-                if (!entry) return;
-                const text = entry.contentText || "";
-                return {
-                    additionalContext:
-                        summaryScopeInstructions + "\nThe user is reading a developer news article in the reader canvas and may be asking about it.\n" +
-                        "Selected article:\n" +
-                        "Title: " + entry.title + "\n" +
-                        "Date: " + (entry.date || "unknown") + "\n" +
-                        "URL: " + entry.link + "\n" +
-                        "Source: " + entry.sourceName + "\n" +
-                        (entry.categories && entry.categories.length
-                            ? "Categories: " + entry.categories.join(", ") + "\n"
-                            : "") +
-                        "\nArticle content:\n" + text,
-                };
-            } catch {
-                return;
-            }
-        },
-    },
+    hooks: { onUserPromptSubmitted },
 });
 
 session.log("Developer news reader ready. Open the 'Developer News' canvas to start reading.", {

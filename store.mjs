@@ -1,6 +1,9 @@
 // Durable, user-scoped state for the changelog reader.
 // Stored under the extension's own artifacts dir so it follows the user across
 // all sessions (last-read date + the generated summary must persist).
+// The article being discussed is deliberately NOT stored here: it is
+// session-local (see context.mjs). A legacy `selectedId` left in state.json by
+// older versions is preserved on disk but never read.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -10,7 +13,7 @@ import { scopeCandidates } from "./summary.mjs";
 const COPILOT_HOME = process.env.COPILOT_HOME || join(homedir(), ".copilot");
 const STATE_PATH = join(COPILOT_HOME, "extensions", "changelog-reader", "artifacts", "state.json");
 
-const DEFAULT_STATE = { lastReadISO: null, selectedId: null, summary: null };
+const DEFAULT_STATE = { lastReadISO: null, summary: null };
 
 export async function loadState() {
     try {
@@ -32,11 +35,6 @@ export async function markAllRead(whenISO = new Date().toISOString()) {
     const state = await loadState();
     // Clear the summary: once read, the unread set changes and it no longer applies.
     return saveState({ ...state, lastReadISO: whenISO, summary: null });
-}
-
-export async function setSelected(id) {
-    const state = await loadState();
-    return saveState({ ...state, selectedId: id || null });
 }
 
 export async function setSummary(markdown, candidateIds, relevantExternalIds, scope = {}) {
@@ -99,7 +97,6 @@ export function computeView(entries, state) {
         candidateIds,
         status: {
             lastReadISO: state.lastReadISO,
-            selectedId: state.selectedId,
             unreadCount: unread.length,
             reviewCount: summaryCandidates.length,
             microsoftCandidateCount: microsoftCandidates.length,
