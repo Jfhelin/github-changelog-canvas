@@ -12,8 +12,10 @@ export const summaryRangeProperties = {
 export const summaryScopeInstructions =
     "Preserve any date range the user requested earlier in this conversation unless they explicitly change it. " +
     "Resolve relative dates using the current date and user's timezone; pass after/before to get_unread_for_summary. " +
+    "For date-bounded requests, tell the user the exact local-time publication window before fetching, with its start inclusive and end exclusive. " +
     "Every candidate means every candidate within that range, not the entire unread backlog. " +
     "Pass the returned scope and candidateIds unchanged to set_unread_summary. " +
+    "Do not open the canvas for a date-bounded request until the scoped summary has been saved. " +
     "Do not mark older articles read to narrow a summary.";
 
 export function normalizeScope(input = {}) {
