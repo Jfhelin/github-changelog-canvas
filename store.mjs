@@ -85,9 +85,18 @@ export function computeView(entries, state) {
     );
     const unread = summaryCandidates.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
     const readingEntries = annotated.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
-    const navigationEntries = summaryValid && (scope.after || scope.before)
-        ? scopedCandidates.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id))
-        : unread.length > 0 ? unread : readingEntries;
+    const waitForInitialSummary = !state.lastReadISO && !summaryValid;
+    const hasDateScope = !!(scope.after || scope.before);
+    let navigationEntries;
+    if (hasDateScope) {
+        navigationEntries = summaryValid
+            ? scopedCandidates.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id))
+            : [];
+    } else if (waitForInitialSummary) {
+        navigationEntries = [];
+    } else {
+        navigationEntries = unread.length > 0 ? unread : readingEntries;
+    }
     const microsoftCandidates = summaryCandidates.filter((e) => e.source === "microsoft-devblogs");
     return {
         entries: readingEntries,

@@ -287,12 +287,12 @@ const canvas = createCanvas({
     id: "changelog-reader",
     displayName: "Developer News",
     description:
-        "Personalized reader for GitHub Changelog, GitHub Next, and relevant developer news.",
+        "Personalized GitHub and developer news reader; for date-bounded requests, state the local-time window and save a scoped summary before opening the canvas.",
     actions: [
         {
             name: "list_changelog_entries",
             description:
-                "List recent entries in the personalized developer news reading queue, newest first.",
+                "List entries in the current reading queue, newest first. For date-bounded summaries, use get_unread_for_summary with the requested range instead of listing the unscoped backlog.",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -301,12 +301,11 @@ const canvas = createCanvas({
                 },
             },
             handler: async (ctx) => {
-                const { entries, status } = await getView({ sessionId: canvasSessionId(ctx) });
+                const { navigationEntries } = await getView({ sessionId: canvasSessionId(ctx) });
                 const onlyNew = ctx.input && ctx.input.onlyNew;
                 const limit = (ctx.input && ctx.input.limit) || 30;
-                const filtered = (onlyNew ? entries.filter((e) => e.isNew) : entries).slice(0, limit);
+                const filtered = (onlyNew ? navigationEntries.filter((e) => e.isNew) : navigationEntries).slice(0, limit);
                 return {
-                    status,
                     entries: filtered.map((e) => ({
                         id: e.id,
                         title: e.title,
@@ -387,7 +386,9 @@ const canvas = createCanvas({
         {
             name: "get_unread_for_summary",
             description:
-                "Return unread candidates within the user's requested publication range. Include all GitHub Changelog and GitHub Next entries within this scope, then apply relevanceProfile to other sources. " + summaryScopeInstructions,
+                "Return unread candidates and article content only within the user's requested publication range. " +
+                "Include all GitHub Changelog and GitHub Next entries in that scope, then apply relevanceProfile " +
+                "to other sources; do not use or report the broader unread-backlog count. " + summaryScopeInstructions,
             inputSchema: {
                 type: "object",
                 properties: summaryRangeProperties,
@@ -403,12 +404,12 @@ const canvas = createCanvas({
                 const view = await getView({ sinceISO: scope.after, sessionId: canvasSessionId(ctx) });
                 const candidates = scopeCandidates(view.summaryCandidates, scope);
                 return {
-                    status: view.status,
                     scope,
                     candidateIds: candidates.map((e) => e.id),
                     relevanceProfile:
                         "Within the returned scope, always include every GitHub Changelog and GitHub Next entry. From all other sources within that scope, include: GitHub or GitHub Copilot news not duplicated in those sources; all official Azure DevOps product updates, sprint notes, release announcements, and service changes; significant VS Code updates involving agents, AI, developer workflows, or broad developer impact; AI development; agentic changes for developers; code security; SDLC security; and major updates relevant to most developers. Exclude duplicate coverage and narrow product updates outside these areas.",
                     candidateCount: candidates.length,
+                    feedErrors: view.status.feedErrors,
                     articles: candidates.map((e) => ({
                         id: e.id,
                         title: e.title,
@@ -486,14 +487,7 @@ const canvas = createCanvas({
             entry = await startServer(canvasSessionId(ctx));
             servers.set(ctx.instanceId, entry);
         }
-        let title = "Developer News";
-        try {
-            const { status } = await getView({ sessionId: canvasSessionId(ctx) });
-            if (status.unreadCount > 0) title = `Developer News (${status.unreadCount} unread)`;
-        } catch {
-            /* keep default title if feed fetch fails on open */
-        }
-        return { title, url: entry.url };
+        return { title: "Developer News", url: entry.url };
     },
     onClose: async (ctx) => {
         const entry = servers.get(ctx.instanceId);

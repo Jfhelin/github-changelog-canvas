@@ -16,6 +16,22 @@ const candidates = scopeCandidates(entries, scope);
 const ids = candidates.map((entry) => entry.id);
 const markdown = "## GitHub Changelog\n- [New](article:new)\n## GitHub Next\n- [Next](article:next)";
 
+async function renderWithState(state) {
+    const script = renderPage().match(/<script>([\s\S]*?)<\/script>/)[1];
+    const elements = new Map(["app", "status", "pos", "btnPrev", "btnSummary", "btnNext", "btnDiscuss", "btnMark", "toast"]
+        .map((id) => [id, { innerHTML: "", textContent: "", disabled: false, style: {} }]));
+    const document = {
+        getElementById: (id) => elements.get(id),
+        querySelector: () => ({ scrollTop: 0 }),
+        addEventListener: () => {},
+    };
+    const fetch = async () => ({ ok: true, json: async () => state });
+    const run = new Function("document", "fetch", "URL", "setTimeout", "clearTimeout", script);
+    run(document, fetch, URL, () => 1, () => {});
+    await new Promise((resolve) => setImmediate(resolve));
+    return elements;
+}
+
 test("normalizes timezone and applies inclusive start, exclusive end", () => {
     assert.equal(scope.after, "2026-01-02T07:00:00.000Z");
     assert.deepEqual(ids, ["new", "next", "external:/post"]);
@@ -55,7 +71,9 @@ test("scoped summary preserves backlog and remains valid when older news arrives
     assert.equal(view.summary.valid, true);
     assert.deepEqual(view.summary.scope, scope);
     assert.equal(computeView([...entries, { ...entries[0], id: "older" }], state).summary.valid, true);
-    assert.equal(computeView([...entries, { ...entries[1], id: "newer" }], state).summary.valid, false);
+    const stale = computeView([...entries, { ...entries[1], id: "newer" }], state);
+    assert.equal(stale.summary.valid, false);
+    assert.deepEqual(stale.navigationEntries, []);
 });
 
 test("all-unread and legacy summaries retain their existing behavior", () => {
@@ -72,7 +90,39 @@ test("rendered browser script parses and displays scope-specific counts", () => 
     const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
     assert.doesNotThrow(() => new Function(script));
     assert.match(script, /sum\.includedCount/);
-    assert.match(script, /Publication range/);
+    assert.match(script, /Collection window/);
+    assert.match(script, /Items outside this window are not included/);
+});
+
+test("first visit does not expose the unfiltered unread queue while a summary is pending", async () => {
+    const elements = await renderWithState({
+        status: { unreadCount: 131, reviewCount: 131, summaryReady: false, firstVisit: true, feedErrors: [] },
+        summary: null,
+        articles: [],
+    });
+
+    assert.equal(elements.get("status").textContent, "Create a summary before browsing");
+    assert.match(elements.get("app").innerHTML, /Start with a news summary/);
+    assert.doesNotMatch(elements.get("app").innerHTML, /131/);
+    assert.doesNotMatch(elements.get("app").innerHTML, /Skip &amp; read/);
+});
+
+test("date-scoped summary shows only its range count, not the unread backlog count", async () => {
+    const elements = await renderWithState({
+        status: { unreadCount: 126, reviewCount: 131, summaryReady: true, firstVisit: true, feedErrors: [] },
+        summary: {
+            valid: true,
+            scope: { after: "2026-11-05T23:00:00.000Z", before: "2026-11-13T08:48:31.000Z" },
+            includedCount: 19,
+            markdown: "## GitHub Changelog\n- [Update](article:update)",
+        },
+        articles: Array.from({ length: 19 }, (_, i) => ({ id: String(i), title: "Update" })),
+    });
+
+    assert.equal(elements.get("status").textContent, "19 updates in this date range");
+    assert.match(elements.get("app").innerHTML, /19 updates in this date range/);
+    assert.match(elements.get("app").innerHTML, /Collection window:/);
+    assert.doesNotMatch(elements.get("app").innerHTML, /126 relevant updates remain unread overall/);
 });
 
 test("navigation includes only the valid summary's scoped and relevant articles", () => {
@@ -96,14 +146,15 @@ test("empty scoped summaries do not fall back to the backlog", () => {
     assert.equal(view.status.unreadCount, 4);
 });
 
-test("navigation preserves browsing without a valid date-scoped summary", () => {
+test("first visit waits for a summary before exposing article navigation", () => {
     for (const state of [
         { lastReadISO: null },
         { lastReadISO: null, summary: { markdown, candidateIds: [], scope } },
     ]) {
-        const view = computeView(entries, state);
-        assert.deepEqual(view.navigationEntries, view.unread);
+        assert.deepEqual(computeView(entries, state).navigationEntries, []);
     }
+    const activeBacklog = computeView(entries, { lastReadISO: "2026-01-01T00:00:00Z" });
+    assert.deepEqual(activeBacklog.navigationEntries, activeBacklog.unread);
     const caughtUp = computeView(entries, { lastReadISO: "2026-01-05T00:00:00Z" });
     assert.deepEqual(caughtUp.navigationEntries, caughtUp.entries);
     const legacy = computeView(entries, { lastReadISO: null, summary: {

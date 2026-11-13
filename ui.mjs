@@ -208,6 +208,15 @@ export function renderPage() {
     if (isNaN(d.getTime())) return "";
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }
+  function fmtDateTime(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleString(undefined, {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", timeZoneName: "short"
+    });
+  }
 
   // ---- tiny markdown -> html (headings, lists, bold, links, inline code) ----
   function inlineMd(s) {
@@ -254,7 +263,11 @@ export function renderPage() {
     var st = data.status || {};
     var n = articleCount();
     var txt;
-    if (data.summary && data.summary.valid) txt = n + " updates in this summary";
+    if (data.summary && data.summary.valid) {
+      var scope = data.summary.scope || {};
+      txt = n + ((scope.after || scope.before) ? " updates in this date range" : " updates in this summary");
+    }
+    else if (st.firstVisit && !st.summaryReady) txt = "Create a summary before browsing";
     else if (st.firstVisit) txt = "First visit — " + (st.reviewCount || 0) + " updates to review";
     else if ((st.reviewCount || 0) > 0 && !st.summaryReady) txt = (st.reviewCount || 0) + " updates awaiting relevance review";
     else if ((st.reviewCount || 0) > 0) txt = (st.unreadCount || 0) + " relevant updates since " + (fmtDate(st.lastReadISO) || "last visit");
@@ -323,6 +336,10 @@ export function renderPage() {
     var st = data.status || {};
     var unread = st.unreadCount || 0;
     var reviewCount = st.reviewCount || 0;
+    var sum = data.summary;
+    var scope = sum && sum.scope;
+    var scopedSummary = !!(sum && sum.valid && scope && (scope.after || scope.before));
+    var needsInitialSummary = !!(st.firstVisit && !(sum && sum.valid));
 
     if (reviewCount === 0 && !(data.summary && data.summary.valid)) {
       app.innerHTML =
@@ -337,18 +354,22 @@ export function renderPage() {
       return;
     }
 
-    var sum = data.summary;
     var summaryCount = sum && sum.valid ? sum.includedCount : reviewCount;
-    var scope = sum && sum.scope;
-    var rangeLabel = scope && (scope.after || scope.before)
-      ? " Publication range: " + (scope.after ? scope.after : "start of unread backlog") +
-        " to " + (scope.before ? scope.before + " (exclusive)" : "now") + "."
+    var rangeLabel = scopedSummary
+      ? " Collection window: " + (scope.after ? fmtDateTime(scope.after) + " (inclusive)" : "earliest available news") +
+        " to " + (scope.before ? fmtDateTime(scope.before) + " (exclusive)" : "now (exclusive)") + "."
       : "";
-    var head =
-      '<div class="summary-head"><h1>✨ Your unread summary</h1></div>' +
-      '<p class="sub">' + summaryCount + " update" + (summaryCount === 1 ? "" : "s") +
-      (sum && sum.valid ? " in this summary. " + unread + " relevant updates remain unread overall." : " to review across GitHub and other developer sources.") +
-      esc(rangeLabel) + "</p>";
+    var head = needsInitialSummary
+      ? '<div class="summary-head"><h1>✨ Start with a news summary</h1></div>' +
+        '<p class="sub">Generate a summary first. If you requested a date range, only items from that window will be shown; other unread items stay outside the reading queue.</p>'
+      : '<div class="summary-head"><h1>✨ ' + (scopedSummary ? "Updates for this period" : "Your unread summary") + "</h1></div>" +
+        '<p class="sub">' + summaryCount + " update" + (summaryCount === 1 ? "" : "s") +
+        (sum && sum.valid
+          ? (scopedSummary
+            ? " in this date range. Items outside this window are not included; their unread status is unchanged."
+            : " in this summary. " + unread + " relevant updates remain unread overall.")
+          : " to review across GitHub and other developer sources.") +
+        esc(rangeLabel) + "</p>";
 
     if (generating) {
       app.innerHTML =
@@ -372,7 +393,9 @@ export function renderPage() {
     var stale = sum && !sum.valid;
     app.innerHTML =
       '<div class="card">' + head +
-      "<p>" + (stale
+      "<p>" + (needsInitialSummary
+        ? "Create a summary to start reading. For a date-bounded request, the summary and reading queue will contain only articles in that period."
+        : stale
         ? "Your unread set changed since the last summary. Generate a fresh one:"
         : "Get an LLM-generated overview of everything you've missed, grouped by theme — then read the details article by article.") + "</p>" +
       '<div class="rowbtns">' +

@@ -87,8 +87,8 @@ test("actions, HTTP navigation, lookup and discussion share the saved scope with
     });
     assert.ok(fetchedPages.includes(6));
     assert.equal(result.articles.length, 5);
-    assert.equal(result.status.selectedId, null, "stale global selectedId is ignored");
-    assert.equal(result.status.feedErrors[0].source, "Azure DevOps Release Notes");
+    assert.equal(result.status, undefined, "scoped results do not expose unread-backlog counts");
+    assert.equal(result.feedErrors[0].source, "Azure DevOps Release Notes");
     const saved = await action("set_unread_summary", {
         scope: result.scope, candidateIds: result.candidateIds, relevantExternalIds: [],
         markdown: "## GitHub Changelog\n### Updates\n" +

@@ -37,12 +37,18 @@ The extension declares a canvas to the Copilot runtime via the `@github/copilot-
 
 Summary requests preserve date constraints from the conversation. Relative dates
 must be resolved using the current date and user's timezone before fetching.
-Omitting both bounds retains the all-unread behavior. A scoped summary displays
-its range and article count separately from the unread backlog; it does not mark
-older articles read. While a date-scoped summary is valid, navigation contains
-only its included articles and positions use the actual queue size (`1/23`).
-An empty scoped summary has no reading queue. Existing summaries without a
-stored date scope retain the original backlog browsing behavior.
+For a date-bounded request, the assistant states the exact local-time collection
+window before fetching and saves the scoped summary before opening the canvas.
+On a first visit with no saved summary, article browsing stays disabled so the
+unfiltered unread backlog is not exposed while a requested range is pending.
+Omitting both bounds retains the all-unread summary behavior. A scoped summary
+displays its local-time range and article count without the overall unread
+backlog count; it does not mark older articles read. While a date-scoped summary
+is valid, navigation contains only its included articles and positions use the
+actual queue size (`1/23`). A stale date-scoped summary has no article queue
+until regenerated. An empty scoped summary has no reading queue. Existing
+summaries without a stored date scope retain the original backlog browsing
+behavior.
 
 Feed pagination follows the requested or saved summary start, so busy weeks are
 not limited to three pages. Requests time out after 20 seconds. An unavailable
