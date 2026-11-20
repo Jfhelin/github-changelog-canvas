@@ -22,7 +22,7 @@ The extension declares a canvas to the Copilot runtime via the `@github/copilot-
 |------|----------------|
 | `extension.mjs` | Wiring: HTTP server per instance, canvas + actions, `session.send` endpoints (`/api/discuss`, `/api/summarize`), the handoff-only context hook. |
 | `context.mjs` | Session-local, in-memory state: the article selected for discussion and pending reader handoffs, keyed by runtime session ID. |
-| `feed.mjs` | Fetch + parse RSS and Atom sources for GitHub Changelog, GitHub Next, Microsoft Developer Blogs, Azure DevOps, and VS Code; deduplicate, sanitize HTML, extract plain text, and cache. |
+| `feed.mjs` | Fetch + parse RSS/Atom sources and Microsoft Learn's Azure DevOps release-note index and articles; deduplicate, sanitize HTML, extract plain text, and cache. |
 | `store.mjs` | Durable per-user state shared by all sessions (last-read date, generated summary, relevant external article IDs) under `$COPILOT_HOME/extensions/changelog-reader/artifacts/`. |
 | `ui.mjs` | The light-mode reading pane: header navigator, single-article view, summary page, and a tiny Markdown renderer. |
 
@@ -55,8 +55,14 @@ not limited to three pages. Requests time out after 20 seconds. An unavailable
 source no longer blocks healthy feeds: the reader and status actions disclose
 source and later-page errors as **Coverage incomplete**. If every source fails,
 the reader displays an explicit error and Retry control. Read markers are not
-changed by feed failures. The Azure DevOps release-notes feed currently returns
-HTTP 404; no replacement has been verified, so its warning remains visible.
+changed by feed failures. Azure DevOps sprint release notes come directly from
+[Microsoft Learn's published index](https://learn.microsoft.com/en-us/azure/devops/release-notes/toc.json),
+not the unavailable GitHub commit feed. The reader discovers canonical sprint
+articles, loads their full content, and uses the publication date rather than
+the last-modified date. Sprint IDs remain stable across the source change.
+It loads at least three recent releases by default and continues back to the
+requested start, up to 50 releases; article failures and range limits remain
+visible as incomplete coverage.
 Shared user state is re-read for each operation so other reader sessions and
 extension reinstalls cannot leave stale read markers or summaries in memory.
 Unreadable or malformed state is reported rather than silently reset.

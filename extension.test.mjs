@@ -59,7 +59,7 @@ test("actions, HTTP navigation, lookup and discussion share the saved scope with
     });
     t.mock.method(globalThis, "fetch", async (url, options) => {
         if (String(url).startsWith("http://127.0.0.1:")) return nativeFetch(url, options);
-        if (url.includes("release-notes.atom")) return new Response("", { status: 404 });
+        if (url.endsWith("/release-notes/toc.json")) return new Response("", { status: 404 });
         if (url.startsWith("https://github.blog/changelog/feed/")) {
             const page = Number(new URL(url).searchParams.get("paged") || 1);
             fetchedPages.push(page);

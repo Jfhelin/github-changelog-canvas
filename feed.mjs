@@ -1,4 +1,4 @@
-// Fetches and parses the developer news RSS and Atom feeds.
+// Fetches developer news feeds and Microsoft Learn release notes.
 // No third-party deps: the feeds are controlled sources, so a focused regex
 // parser is sufficient and keeps the extension dependency-free.
 
@@ -51,11 +51,9 @@ const SOURCES = [
     {
         key: "azure-devops-release-notes",
         name: "Azure DevOps Release Notes",
-        feedUrl: "https://github.com/MicrosoftDocs/azure-devops-docs/commits/main/release-notes.atom",
+        feedUrl: "https://learn.microsoft.com/en-us/azure/devops/release-notes/toc.json",
         idPrefix: "azure-devops-release-notes:",
-        format: "atom",
-        paginated: false,
-        transform: transformAdoReleaseEntry,
+        format: "learn-release-notes",
     },
 ];
 
@@ -240,35 +238,100 @@ function parseAtomEntries(xml, source) {
     return entries;
 }
 
-function transformAdoReleaseEntry(entry) {
-    const match = entry.title.match(/Azure DevOps Sprint\s+(\d+)\s+Release Notes/i);
-    if (!match) return null;
-    return {
-        ...entry,
-        id: `azure-devops-release-notes:sprint-${match[1]}`,
-        title: `Azure DevOps Sprint ${match[1]} Update`,
-        categories: ["Azure DevOps", "Release notes"],
-    };
-}
-
 function parseEntries(xml, source) {
-    const parsed = source.format === "atom" ? parseAtomEntries(xml, source) : parseRssItems(xml, source);
-    if (!source.transform) return parsed;
-    return parsed.map((entry) => source.transform(entry)).filter(Boolean);
+    return source.format === "atom" ? parseAtomEntries(xml, source) : parseRssItems(xml, source);
 }
 
-async function fetchPage(source, paged) {
-    const separator = source.feedUrl.includes("?") ? "&" : "?";
-    const url = paged > 1 ? `${source.feedUrl}${separator}paged=${paged}` : source.feedUrl;
+async function fetchText(url, accept) {
     const res = await fetch(url, {
-        headers: { "User-Agent": "copilot-news-reader/1.0", Accept: "application/rss+xml, text/xml" },
+        headers: { "User-Agent": "copilot-news-reader/1.0", Accept: accept },
         signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) throw new Error(`Feed request failed: ${res.status} ${res.statusText}`);
     return res.text();
 }
 
+async function fetchPage(source, paged) {
+    const separator = source.feedUrl.includes("?") ? "&" : "?";
+    const url = paged > 1 ? `${source.feedUrl}${separator}paged=${paged}` : source.feedUrl;
+    return fetchText(url, "application/rss+xml, text/xml");
+}
+
+function learnContentBlocks(html) {
+    const blocks = [];
+    let depth = 0, start = 0;
+    // Learn separates the title and article into .content divs, with nested
+    // divs for notes and code examples. Keep those, but not the page chrome.
+    for (const tag of html.matchAll(/<\/?div\b[^>]*>/gi)) {
+        if (depth === 0) {
+            if (/^<div\b[^>]*\bclass=["']content["']/i.test(tag[0])) {
+                start = tag.index + tag[0].length;
+                depth = 1;
+            }
+        } else if (/^<\/div/i.test(tag[0])) {
+            if (--depth === 0) blocks.push(html.slice(start, tag.index));
+        } else {
+            depth++;
+        }
+    }
+    return blocks;
+}
+
+async function fetchAdoReleaseNotes(source, { minPages, sinceISO }) {
+    const index = JSON.parse(await fetchText(source.feedUrl, "application/json"));
+    if (!Array.isArray(index.items)) throw new Error("Invalid Microsoft Learn release-notes index.");
+    const releases = new Map();
+    function visit(items) {
+        for (const item of items) {
+            const match = item.href?.match(/^(\d{4})\/sprint-(\d+)-update$/);
+            if (match) releases.set(Number(match[2]), new URL(item.href, source.feedUrl).href);
+            if (Array.isArray(item.children)) visit(item.children);
+        }
+    }
+    visit(index.items);
+    const ordered = [...releases].sort(([a], [b]) => b - a);
+    if (!ordered.length) throw new Error("No Azure DevOps sprint release notes found in Microsoft Learn index.");
+    const cutoff = sinceISO ? Date.parse(sinceISO) : null;
+    const entries = [], errors = [];
+    let covered = cutoff === null;
+    for (const [sprint, url] of ordered.slice(0, MAX_PAGES)) {
+        try {
+            const html = await fetchText(url, "text/html");
+            const blocks = learnContentBlocks(html);
+            const title = htmlToText(firstTag(blocks[0] || "", "h1"));
+            const date = toISO(html.match(/<meta\b[^>]*\bname=["']ms\.date["'][^>]*\bcontent=["']([^"']+)["']/i)?.[1]);
+            if (!title || !date || !htmlToText(blocks.slice(1).join("\n"))) {
+                throw new Error("Microsoft Learn release note is missing its title, publication date, or article content.");
+            }
+            entries.push(buildEntry(source, {
+                id: `sprint-${sprint}`,
+                title: `Azure DevOps Sprint ${sprint}: ${title}`,
+                link: url,
+                author: "Microsoft",
+                date,
+                categories: ["Azure DevOps", "Release notes"],
+                descriptionHtml: firstTag(blocks[1], "p"),
+                contentHtml: blocks.join("\n").replace(/\b(href|src)=(["'])(.*?)\2/gi,
+                    (_, attribute, quote, value) =>
+                        `${attribute}=${quote}${new URL(decodeEntities(value), url).href.replace(/"/g, "&quot;")}${quote}`),
+            }));
+            if (cutoff !== null && Date.parse(date) <= cutoff) covered = true;
+        } catch (error) {
+            errors.push({ source: source.name, url, message: error.message });
+        }
+        if (entries.length >= minPages && covered) break;
+    }
+    if (!covered && ordered.length > MAX_PAGES) {
+        errors.push({
+            source: source.name, url: source.feedUrl,
+            message: `Reached the ${MAX_PAGES}-release limit before covering the requested range.`,
+        });
+    }
+    return { entries, errors };
+}
+
 async function fetchSource(source, { minPages, sinceISO }) {
+    if (source.format === "learn-release-notes") return fetchAdoReleaseNotes(source, { minPages, sinceISO });
     const cutoff = sinceISO ? Date.parse(sinceISO) : null;
     const seen = new Set();
     const entries = [];
