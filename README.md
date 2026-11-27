@@ -16,14 +16,14 @@ It turns the changelog into a focused reading experience inside Copilot:
 
 ## How it works
 
-The extension declares a canvas to the Copilot runtime via the `@github/copilot-sdk`. Each open canvas instance runs a tiny loopback HTTP server that serves the reading UI and JSON state endpoints. A few agent-callable actions, explicit chat handoffs, and a narrowly scoped `onUserPromptSubmitted` hook connect the reader to the chat:
+The extension source lives in [`.github/extensions/changelog-reader/`](.github/extensions/changelog-reader/), so it is loaded as a project-scoped extension only in sessions for this repository. It declares a canvas to the Copilot runtime via the `@github/copilot-sdk`. Each open canvas instance runs a tiny loopback HTTP server that serves the reading UI and JSON state endpoints. A few agent-callable actions, explicit chat handoffs, and a narrowly scoped `onUserPromptSubmitted` hook connect the reader to the chat:
 
 | File | Responsibility |
 |------|----------------|
 | `extension.mjs` | Wiring: HTTP server per instance, canvas + actions, `session.send` endpoints (`/api/discuss`, `/api/summarize`), the handoff-only context hook. |
 | `context.mjs` | Session-local, in-memory state: the article selected for discussion and pending reader handoffs, keyed by runtime session ID. |
 | `feed.mjs` | Fetch + parse RSS/Atom sources and Microsoft Learn's Azure DevOps release-note index and articles; deduplicate, sanitize HTML, extract plain text, and cache. |
-| `store.mjs` | Durable per-user state shared by all sessions (last-read date, generated summary, relevant external article IDs) under `$COPILOT_HOME/extensions/changelog-reader/artifacts/`. |
+| `store.mjs` | Durable per-user state shared by all sessions (last-read date, generated summary, relevant external article IDs) in `$COPILOT_HOME/changelog-reader/state.json`, independent of install location (state from older installs in `extensions/changelog-reader/artifacts/` is copied forward on first load). |
 | `ui.mjs` | The light-mode reading pane: header navigator, single-article view, summary page, and a tiny Markdown renderer. |
 
 ### Agent actions
@@ -88,36 +88,39 @@ Developer News context never leaks into unrelated conversations or repositories:
   conversation does not activate news context. A reader opened for one
   conversation cannot send prompts into another.
 
-Run regression tests with `node --test`.
+Run regression tests with `node --test` from `.github/extensions/changelog-reader/`.
 
 ## Install
 
-This is a Copilot CLI canvas extension. Drop the folder into one of the discovered extension locations:
-
-- **User scope** (recommended): `$COPILOT_HOME/extensions/changelog-reader/` (defaults to `~/.copilot/extensions/changelog-reader/`)
-- **Project scope**: `<repo>/.github/extensions/changelog-reader/`
+This is a Copilot CLI canvas extension. It is **project-scoped**: the code lives in
+`.github/extensions/changelog-reader/`, so Copilot loads the **Developer News**
+canvas only in sessions whose working directory is this repository (or one of its
+worktrees). Clone the repo and open a Copilot session in it:
 
 ```sh
-git clone https://github.com/Jfhelin/github-changelog-canvas.git \
-  ~/.copilot/extensions/changelog-reader
+git clone https://github.com/Jfhelin/github-changelog-canvas.git
 ```
 
 Then reload extensions in Copilot CLI (or restart it) and open the **Developer News** canvas.
 
+To make it available everywhere instead, copy `.github/extensions/changelog-reader/`
+to `$COPILOT_HOME/extensions/changelog-reader/` (defaults to `~/.copilot/extensions/`).
+Do not install both copies at once.
+
 ### Updating an existing install
 
 Extensions are loaded per session and keep running old code until restarted.
-After updating the files (`git -C ~/.copilot/extensions/changelog-reader pull`,
-or copying `*.mjs` into that folder), reload extensions or restart Copilot, and
-start new conversations (`/clear` also reloads extensions) so every session runs
-the new version. `artifacts/state.json` (read markers and summaries) is kept as-is.
+After pulling new changes, reload extensions or restart Copilot, and start new
+conversations (`/clear` also reloads extensions) so every session runs the new
+version. `$COPILOT_HOME/changelog-reader/state.json` (read markers and summaries)
+is kept as-is.
 
 > The `@github/copilot-sdk` import is resolved automatically by the Copilot CLI — no `package.json` or `node_modules` required.
 
 ## Notes
 
 - The entry file **must** be named `extension.mjs` and live in an immediate subdirectory of a discovered extensions folder.
-- Personal read-state lives in `artifacts/` and is intentionally **not** committed (see `.gitignore`).
+- Personal read-state lives outside the repository in `$COPILOT_HOME/changelog-reader/` and is never committed.
 - `stdout` is reserved for JSON-RPC; the extension never uses `console.log` (it uses `session.log`).
 
 ## License
