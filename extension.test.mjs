@@ -106,6 +106,10 @@ test("actions, HTTP navigation, lookup and discussion share the saved scope with
     const view = (await http("api/state")).body;
     assert.equal(view.summary.valid, true);
     assert.deepEqual(view.articles.map((entry) => entry.id), result.candidateIds);
+    assert.equal(view.status.unreadCount, result.candidateCount);
+    assert.equal(view.status.reviewCount, result.candidateCount);
+    assert.equal(view.status.total, result.candidateCount);
+    assert.equal((await action("changelog_status")).unreadCount, result.candidateCount);
     assert.equal((await action("get_changelog_article", { id: "page-5" })).content, articleText.trim());
     assert.equal(await hook(GENERIC_PROMPT), undefined, "an open canvas alone must not inject context");
 
