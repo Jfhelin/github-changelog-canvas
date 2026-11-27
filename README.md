@@ -45,8 +45,10 @@ Omitting both bounds retains the all-unread summary behavior. A scoped summary
 displays its local-time range and article count without the overall unread
 backlog count; it does not mark older articles read. While a date-scoped summary
 is valid, navigation contains only its included articles and positions use the
-actual queue size (`1/23`). A stale date-scoped summary has no article queue
-until regenerated. An empty scoped summary has no reading queue. Existing
+actual queue size (`1/23`). Status counts (including unread, relevance-review,
+source, and total counts) also use the saved publication range, not the backlog.
+A stale date-scoped summary has no article queue until regenerated and keeps
+its date-range label instead of exposing backlog totals. An empty scoped summary has no reading queue. Existing
 summaries without a stored date scope retain the original backlog browsing
 behavior.
 

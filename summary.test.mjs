@@ -66,7 +66,9 @@ test("rejects stale snapshots and links outside selected scope", () => {
 test("scoped summary preserves backlog and remains valid when older news arrives", () => {
     const state = { lastReadISO: null, summary: { markdown, candidateIds: ids, relevantExternalIds: [], scope } };
     const view = computeView(entries, state);
-    assert.equal(view.status.unreadCount, 4);
+    assert.equal(view.status.unreadCount, 2);
+    assert.equal(view.status.reviewCount, 3);
+    assert.equal(view.status.total, 2);
     assert.equal(view.summary.includedCount, 2);
     assert.equal(view.summary.valid, true);
     assert.deepEqual(view.summary.scope, scope);
@@ -130,7 +132,10 @@ test("navigation includes only the valid summary's scoped and relevant articles"
     const view = computeView(entries, state);
     assert.deepEqual(view.navigationEntries.map((e) => e.id), ids);
     assert.equal(view.navigationEntries.length, view.summary.includedCount);
-    assert.equal(view.status.unreadCount, 5);
+    assert.equal(view.status.unreadCount, 3);
+    assert.equal(view.status.reviewCount, 3);
+    assert.equal(view.status.externalCandidateCount, 1);
+    assert.equal(view.status.externalRelevantCount, 1);
     assert.equal(state.lastReadISO, null);
     const withoutExternal = computeView(entries, { ...state, summary: { ...state.summary, relevantExternalIds: [] } });
     assert.deepEqual(withoutExternal.navigationEntries.map((e) => e.id), ["new", "next"]);
@@ -143,7 +148,45 @@ test("empty scoped summaries do not fall back to the backlog", () => {
     } });
     assert.equal(view.summary.valid, true);
     assert.deepEqual(view.navigationEntries, []);
-    assert.equal(view.status.unreadCount, 4);
+    assert.equal(view.status.unreadCount, 0);
+    assert.equal(view.status.reviewCount, 0);
+    assert.equal(view.status.total, 0);
+});
+
+test("13 scoped articles stay a 13-item queue with a 121-item backlog", async () => {
+    const weeklyScope = normalizeScope({ after: "2026-01-02T00:00:00Z", before: "2026-01-05T00:00:00Z" });
+    const week = Array.from({ length: 13 }, (_, i) => ({ ...entries[1], id: `week-${i}` }));
+    const backlog = Array.from({ length: 108 }, (_, i) => ({ ...entries[0], id: `backlog-${i}` }));
+    const state = { lastReadISO: null, summary: {
+        markdown: "## GitHub Changelog", candidateIds: week.map((e) => e.id),
+        relevantExternalIds: [], scope: weeklyScope,
+    } };
+    const view = computeView([...week, ...backlog], state);
+    assert.equal(view.summaryCandidates.length, 121, "backlog remains available for future summaries");
+    assert.equal(view.navigationEntries.length, 13);
+    assert.equal(view.summary.includedCount, 13);
+    assert.equal(view.status.unreadCount, 13);
+    assert.equal(view.status.reviewCount, 13);
+    assert.equal(view.status.total, 13);
+    const elements = await renderWithState({ ...view, articles: view.navigationEntries });
+    assert.equal(elements.get("status").textContent, "13 updates in this date range");
+    assert.doesNotMatch(elements.get("app").innerHTML, /121/);
+    assert.equal(state.lastReadISO, null);
+});
+
+test("stale scoped summaries retain their range and never show backlog counts", async () => {
+    for (const lastReadISO of [null, "2026-01-01T00:00:00Z"]) {
+        const view = computeView(entries, { lastReadISO, summary: {
+            markdown, candidateIds: [], relevantExternalIds: [], scope,
+        } });
+        assert.equal(view.summary.valid, false);
+        assert.equal(view.status.reviewCount, 3);
+        assert.deepEqual(view.navigationEntries, []);
+        const elements = await renderWithState({ ...view, articles: view.navigationEntries });
+        assert.equal(elements.get("status").textContent, "Summary for this date range needs regenerating");
+        assert.match(elements.get("app").innerHTML, /3 updates to review in this date range/);
+        assert.match(elements.get("app").innerHTML, /Collection window:/);
+    }
 });
 
 test("first visit waits for a summary before exposing article navigation", () => {

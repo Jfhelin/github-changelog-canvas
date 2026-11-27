@@ -263,7 +263,11 @@ export function renderPage() {
     var st = data.status || {};
     var n = articleCount();
     var txt;
-    if (data.summary && data.summary.valid) {
+    if (data.summary && !data.summary.valid && data.summary.scope &&
+        (data.summary.scope.after || data.summary.scope.before)) {
+      txt = "Summary for this date range needs regenerating";
+    }
+    else if (data.summary && data.summary.valid) {
       var scope = data.summary.scope || {};
       txt = n + ((scope.after || scope.before) ? " updates in this date range" : " updates in this summary");
     }
@@ -338,10 +342,10 @@ export function renderPage() {
     var reviewCount = st.reviewCount || 0;
     var sum = data.summary;
     var scope = sum && sum.scope;
-    var scopedSummary = !!(sum && sum.valid && scope && (scope.after || scope.before));
-    var needsInitialSummary = !!(st.firstVisit && !(sum && sum.valid));
+    var scopedSummary = !!(sum && scope && (scope.after || scope.before));
+    var needsInitialSummary = !!(st.firstVisit && !sum);
 
-    if (reviewCount === 0 && !(data.summary && data.summary.valid)) {
+    if (reviewCount === 0 && !scopedSummary && !(data.summary && data.summary.valid)) {
       app.innerHTML =
         '<div class="card center">' +
         '<div class="empty-ico">🎉</div>' +
@@ -368,7 +372,7 @@ export function renderPage() {
           ? (scopedSummary
             ? " in this date range. Items outside this window are not included; their unread status is unchanged."
             : " in this summary. " + unread + " relevant updates remain unread overall.")
-          : " to review across GitHub and other developer sources.") +
+          : (scopedSummary ? " to review in this date range." : " to review across GitHub and other developer sources.")) +
         esc(rangeLabel) + "</p>";
 
     if (generating) {

@@ -83,10 +83,11 @@ export function computeView(entries, state) {
     const relevantExternalIds = new Set(
         summaryValid && Array.isArray(storedRelevantIds) ? storedRelevantIds : []
     );
-    const unread = summaryCandidates.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
-    const readingEntries = annotated.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
-    const waitForInitialSummary = !state.lastReadISO && !summaryValid;
     const hasDateScope = !!(scope.after || scope.before);
+    const reviewCandidates = hasDateScope ? scopedCandidates : summaryCandidates;
+    const unread = reviewCandidates.filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
+    const readingEntries = scopeCandidates(annotated, scope).filter((e) => isAlwaysIncluded(e) || relevantExternalIds.has(e.id));
+    const waitForInitialSummary = !state.lastReadISO && !summaryValid;
     let navigationEntries;
     if (hasDateScope) {
         navigationEntries = summaryValid
@@ -97,7 +98,7 @@ export function computeView(entries, state) {
     } else {
         navigationEntries = unread.length > 0 ? unread : readingEntries;
     }
-    const microsoftCandidates = summaryCandidates.filter((e) => e.source === "microsoft-devblogs");
+    const microsoftCandidates = reviewCandidates.filter((e) => e.source === "microsoft-devblogs");
     return {
         entries: readingEntries,
         unread,
@@ -107,10 +108,10 @@ export function computeView(entries, state) {
         status: {
             lastReadISO: state.lastReadISO,
             unreadCount: unread.length,
-            reviewCount: summaryCandidates.length,
+            reviewCount: reviewCandidates.length,
             microsoftCandidateCount: microsoftCandidates.length,
             microsoftRelevantCount: unread.filter((e) => e.source === "microsoft-devblogs").length,
-            externalCandidateCount: summaryCandidates.filter((e) => !isAlwaysIncluded(e)).length,
+            externalCandidateCount: reviewCandidates.filter((e) => !isAlwaysIncluded(e)).length,
             externalRelevantCount: unread.filter((e) => !isAlwaysIncluded(e)).length,
             summaryReady: summaryValid,
             total: readingEntries.length,
