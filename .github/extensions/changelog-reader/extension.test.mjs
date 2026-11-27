@@ -19,11 +19,12 @@ test("actions, HTTP navigation, lookup and discussion share the saved scope with
     const nativeFetch = globalThis.fetch;
     const fetchedPages = [];
     const marker = "2026-01-01T00:00:00.000Z";
-    const statePath = join(home, "extensions/changelog-reader/artifacts/state.json");
+    const legacyStatePath = join(home, "extensions/changelog-reader/artifacts/state.json");
+    const statePath = join(home, "changelog-reader/state.json");
     const articleText = "Full article content. ".repeat(400);
     await mkdir(join(home, "extensions/changelog-reader/artifacts"), { recursive: true });
     // A stale global selection written by an older version must never activate news context.
-    await writeFile(statePath, JSON.stringify({ lastReadISO: marker, selectedId: "page-5", summary: null }));
+    await writeFile(legacyStatePath, JSON.stringify({ lastReadISO: marker, selectedId: "page-5", summary: null }));
     globalThis.readerTestSDK = {
         createCanvas: (options) => (canvas = options),
         CanvasError: class extends Error {
@@ -158,9 +159,11 @@ test("actions, HTTP navigation, lookup and discussion share the saved scope with
     assert.equal((await action("changelog_status")).selectedId, "page-5");
 
     // Private reader data is untouched: read marker kept, legacy selectedId neither read nor rewritten.
+    // State written by older user-scoped installs is migrated to the location-independent path.
     const state = JSON.parse(await readFile(statePath, "utf8"));
     assert.equal(state.lastReadISO, marker);
     assert.equal(state.selectedId, "page-5");
+    assert.equal(JSON.parse(await readFile(legacyStatePath, "utf8")).lastReadISO, marker);
     await writeFile(statePath, JSON.stringify({ ...state, selectedId: "page-4" }));
     assert.equal((await action("changelog_status")).selectedId, "page-5");
     assert.equal(await hook(GENERIC_PROMPT), undefined);

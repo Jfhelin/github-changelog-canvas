@@ -1,6 +1,7 @@
 // Durable, user-scoped state for the changelog reader.
-// Stored under the extension's own artifacts dir so it follows the user across
-// all sessions (last-read date + the generated summary must persist).
+// Stored under $COPILOT_HOME/changelog-reader/, independent of where the
+// extension is installed (project or user scope), so the last-read date and
+// generated summary persist across all sessions and worktrees.
 // The article being discussed is deliberately NOT stored here: it is
 // session-local (see context.mjs). A legacy `selectedId` left in state.json by
 // older versions is preserved on disk but never read.
@@ -11,18 +12,34 @@ import { dirname, join } from "node:path";
 import { scopeCandidates } from "./summary.mjs";
 
 const COPILOT_HOME = process.env.COPILOT_HOME || join(homedir(), ".copilot");
-const STATE_PATH = join(COPILOT_HOME, "extensions", "changelog-reader", "artifacts", "state.json");
+const STATE_PATH = join(COPILOT_HOME, "changelog-reader", "state.json");
+// Location used by older user-scoped installs; copied forward on first load.
+const LEGACY_STATE_PATH = join(COPILOT_HOME, "extensions", "changelog-reader", "artifacts", "state.json");
 
 const DEFAULT_STATE = { lastReadISO: null, summary: null };
 
-export async function loadState() {
+async function readStateFile() {
     try {
-        const raw = await readFile(STATE_PATH, "utf8");
-        return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+        return await readFile(STATE_PATH, "utf8");
     } catch (error) {
         if (error.code !== "ENOENT") throw error;
-        return { ...DEFAULT_STATE };
     }
+    try {
+        const legacy = await readFile(LEGACY_STATE_PATH, "utf8");
+        await mkdir(dirname(STATE_PATH), { recursive: true });
+        await writeFile(STATE_PATH, legacy, { encoding: "utf8", flag: "wx" }).catch((error) => {
+            if (error.code !== "EEXIST") throw error;
+        });
+        return await readFile(STATE_PATH, "utf8");
+    } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+    }
+}
+
+export async function loadState() {
+    const raw = await readStateFile();
+    return raw === null ? { ...DEFAULT_STATE } : { ...DEFAULT_STATE, ...JSON.parse(raw) };
 }
 
 async function saveState(state) {
